@@ -211,9 +211,57 @@ def manual_process_image(grey, threshold, blur_r):
     _, mask = cv2.threshold(grey, threshold, 255, cv2.THRESH_BINARY_INV)
     return mask
 
-def vectorize_with_potrace(skeleton_image):
-    """Convert 1-pixel skeleton to smooth vector strokes using Potrace.
-    Since input is already a 1-pixel skeleton, Potrace produces single midline paths."""
+def _parse_potrace_svg(svg_path, h):
+    """Parse Potrace SVG output into list of stroke point lists."""
+    with open(svg_path, 'r') as f:
+        svg_content = f.read()
+    svg = SVG.parse(svg_content)
+    strokes = []
+    for element in svg.elements():
+        if isinstance(element, Path):
+            points = []
+            current_point = None
+            for segment in element:
+                if isinstance(segment, Move):
+                    if points and len(points) > 1:
+                        strokes.append(points)
+                        points = []
+                    current_point = (segment.end.x, segment.end.y)
+                    points.append(current_point)
+                elif isinstance(segment, (Line, Close)):
+                    if current_point is not None:
+                        current_point = (segment.end.x, segment.end.y)
+                        points.append(current_point)
+                elif isinstance(segment, CubicBezier):
+                    if current_point is not None:
+                        start = current_point
+                        end = (segment.end.x, segment.end.y)
+                        length = np.hypot(end[0]-start[0], end[1]-start[1])
+                        num_samples = max(3, int(length / 5))
+                        for i in range(1, num_samples + 1):
+                            t = i / num_samples
+                            x = (1-t)**3 * start[0] + 3*(1-t)**2*t * segment.control1.x + \
+                                3*(1-t)*t**2 * segment.control2.x + t**3 * end[0]
+                            y = (1-t)**3 * start[1] + 3*(1-t)**2*t * segment.control1.y + \
+                                3*(1-t)*t**2 * segment.control2.y + t**3 * end[1]
+                            points.append((x, y))
+                        current_point = end
+            if points and len(points) > 1:
+                strokes.append(points)
+    transformed = []
+    for stroke in strokes:
+        t = [(float(x), float(h - y)) for x, y in stroke]
+        transformed.append(t)
+    return transformed
+
+def vectorize_with_potrace(skeleton_image, use_center=False):
+    """Convert binary image to vector strokes using Potrace.
+    
+    Args:
+        skeleton_image: Binary image (0/255)
+        use_center: If True, use Potrace --center mode for centerline tracing.
+                   If False, traces boundaries of filled regions.
+    """
     if skeleton_image is None or skeleton_image.size == 0:
         return []
     if skeleton_image.dtype != np.uint8:
@@ -224,63 +272,28 @@ def vectorize_with_potrace(skeleton_image):
     pbm_path = os.path.join(tmp_dir, f"dd_{uid}.pbm")
     svg_path = os.path.join(tmp_dir, f"dd_{uid}.svg")
     try:
-        inverted = 255 - skeleton_image
-        ok = cv2.imwrite(pbm_path, inverted)
+        if use_center:
+            # Centerline mode: white lines on black background
+            binary = skeleton_image.copy()
+        else:
+            # Boundary mode: invert so filled regions are white
+            binary = 255 - skeleton_image
+        ok = cv2.imwrite(pbm_path, binary)
         if not ok:
             return []
+        cmd = ['potrace', pbm_path, '-s', '-o', svg_path,
+               '--turdsize', '1', '--alphamax', '0.5', '--opttolerance', '0.2']
+        if use_center:
+            cmd.insert(2, '--center')
         result = subprocess.run(
-            ['potrace', pbm_path, '-s', '-o', svg_path,
-             '--turdsize', '1', '--alphamax', '0.5', '--opttolerance', '0.2'],
-            capture_output=True, text=True, timeout=15,
+            cmd, capture_output=True, text=True, timeout=15,
             cwd=tmp_dir
         )
         if result.returncode != 0:
             return []
         if not os.path.exists(svg_path):
             return []
-        with open(svg_path, 'r') as f:
-            svg_content = f.read()
-        svg = SVG.parse(svg_content)
-        strokes = []
-        for element in svg.elements():
-            if isinstance(element, Path):
-                points = []
-                current_point = None
-                for segment in element:
-                    if isinstance(segment, Move):
-                        if points and len(points) > 1:
-                            strokes.append(points)
-                            points = []
-                        current_point = (segment.end.x, segment.end.y)
-                        points.append(current_point)
-                    elif isinstance(segment, (Line, Close)):
-                        if current_point is not None:
-                            current_point = (segment.end.x, segment.end.y)
-                            points.append(current_point)
-                    elif isinstance(segment, CubicBezier):
-                        if current_point is not None:
-                            start = current_point
-                            end = (segment.end.x, segment.end.y)
-                            length = np.hypot(end[0]-start[0], end[1]-start[1])
-                            num_samples = max(3, int(length / 5))
-                            for i in range(1, num_samples + 1):
-                                t = i / num_samples
-                                x = (1-t)**3 * start[0] + 3*(1-t)**2*t * segment.control1.x + \
-                                    3*(1-t)*t**2 * segment.control2.x + t**3 * end[0]
-                                y = (1-t)**3 * start[1] + 3*(1-t)**2*t * segment.control1.y + \
-                                    3*(1-t)*t**2 * segment.control2.y + t**3 * end[1]
-                                points.append((x, y))
-                            current_point = end
-                if points and len(points) > 1:
-                    strokes.append(points)
-        transformed_strokes = []
-        for stroke in strokes:
-            transformed = []
-            for x, y in stroke:
-                plotter_y = h - y
-                transformed.append((float(x), float(plotter_y)))
-            transformed_strokes.append(transformed)
-        return transformed_strokes
+        return _parse_potrace_svg(svg_path, h)
     except Exception:
         return []
     finally:
@@ -290,6 +303,88 @@ def vectorize_with_potrace(skeleton_image):
                     os.unlink(p)
             except:
                 pass
+
+def _distance_transform_centerline(mask):
+    """Extract centerline using distance transform + ridge detection.
+    This finds the 'ridge' (local maxima) of the distance map,
+    which corresponds to the center of strokes."""
+    if mask is None or mask.size == 0:
+        return np.zeros_like(mask)
+    binary = (mask > 0).astype(np.uint8)
+    dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
+    # Ridge = pixels that are local maxima in their neighborhood
+    # Compare each pixel with its 8 neighbors
+    p = np.pad(dist, 1, mode='constant')
+    center = p[1:-1, 1:-1]
+    neighbors = [
+        p[0:-2, 0:-2], p[0:-2, 1:-1], p[0:-2, 2:],
+        p[1:-1, 0:-2],                p[1:-1, 2:],
+        p[2:, 0:-2],   p[2:, 1:-1],   p[2:, 2:]
+    ]
+    # Ridge: center >= all neighbors AND center > 0
+    is_ridge = np.ones_like(center, dtype=bool)
+    for n in neighbors:
+        is_ridge &= (center >= n)
+    is_ridge &= (center > 0)
+    # Only keep ridge pixels that are part of the original shape
+    ridge = (is_ridge & (binary > 0)).astype(np.uint8) * 255
+    # Clean up: remove isolated pixels
+    k = np.ones((3,3), np.uint8)
+    ridge_cleaned = cv2.morphologyEx(ridge, cv2.MORPH_CLOSE, k, iterations=1)
+    return ridge_cleaned
+
+def _guo_hall_skeleton(mask):
+    """Skeletonize using Guo-Hall algorithm (faster, cleaner than Zhang-Suen).
+    Requires opencv-contrib-python."""
+    try:
+        import cv2.ximgproc
+        binary = (mask > 0).astype(np.uint8) * 255
+        skel = cv2.ximgproc.thinning(binary, thinningType=cv2.ximgproc.THINNING_GUOHALL)
+        return skel
+    except (ImportError, AttributeError):
+        return None
+
+def _skimage_skeleton(mask):
+    """Skeletonize using scikit-image's implementation."""
+    try:
+        from skimage.morphology import skeletonize
+        binary = (mask > 0)
+        skel = skeletonize(binary)
+        return (skel.astype(np.uint8) * 255)
+    except ImportError:
+        return None
+
+def extract_centerline(mask, method='auto'):
+    """Extract 1-pixel centerline from binary mask using best available method.
+    
+    Args:
+        mask: Binary image (0/255)
+        method: 'auto', 'distance', 'guo_hall', 'skimage', 'zhang_suen'
+    
+    Returns:
+        1-pixel wide skeleton (0/255)
+    """
+    if mask is None or mask.size == 0:
+        return mask
+    if method == 'auto':
+        # Try methods in order of preference
+        for m in ['guo_hall', 'skimage', 'distance', 'zhang_suen']:
+            skel = extract_centerline(mask, m)
+            if skel is not None and np.any(skel > 0):
+                return skel
+        return mask
+    elif method == 'distance':
+        return _distance_transform_centerline(mask)
+    elif method == 'guo_hall':
+        result = _guo_hall_skeleton(mask)
+        return result if result is not None else None
+    elif method == 'skimage':
+        result = _skimage_skeleton(mask)
+        return result if result is not None else None
+    elif method == 'zhang_suen':
+        return _zhang_suen(mask, max_iters=40)
+    else:
+        return _zhang_suen(mask, max_iters=40)
 
 def _zhang_suen(binary_img, max_iters=40):
     if max_iters <= 0:
@@ -351,6 +446,7 @@ def skeleton_to_strokes(skel, h, w, scale, off_x, off_y, min_px=20, eps_px=1.0):
 def image_to_strokes(path, paper_w, paper_h,
                      auto=True, threshold=128, blur=1,
                      min_px=20, thin_res=256,
+                     skeleton_method='auto',
                      progress_cb=None):
     def prog(m, p):
         if progress_cb: progress_cb(m, p)
@@ -371,8 +467,11 @@ def image_to_strokes(path, paper_w, paper_h,
     else:
         prog("Manual threshold...", 18)
         mask = manual_process_image(grey, threshold, blur)
-    prog("Skeletonizing (midline extraction)...", 30)
-    skel = _zhang_suen(mask, max_iters=40)
+    prog(f"Skeletonizing ({skeleton_method} method)...", 30)
+    skel = extract_centerline(mask, method=skeleton_method)
+    if skel is None or not np.any(skel > 0):
+        prog("Centerline extraction failed, trying fallback...", 40)
+        skel = extract_centerline(mask, method='zhang_suen')
     skel = _prune_skeleton(skel, min_len=6)
     scale = min(paper_w / w, paper_h / h)
     off_x = (paper_w - w * scale) / 2
@@ -556,6 +655,7 @@ class App(tk.Tk):
         self.e_pen_up     = tk.StringVar(value=str(DEF_PEN_UP))
         self.s_speed  = tk.IntVar(value=DEF_DRAW_US)
         self.s_mirror = tk.BooleanVar(value=True)
+        self.s_skel_method = tk.StringVar(value="auto")
         self._build()
         self.bind("<F11>", self._toggle_fs)
         self._tick_id = self.after(300, self._refresh_ports)
@@ -717,7 +817,14 @@ class App(tk.Tk):
         sldr("Threshold",   self.s_thr,  50, 250, widgets_ref=self._manual_widgets)
         sldr("Blur",        self.s_blur,  0,   5,  widgets_ref=self._manual_widgets)
         sldr("Min stroke",  self.s_min,   5, 100)
-        sldr("Thinning px", self.s_thin, 50, 400)
+        skel_row = tk.Frame(p, bg=CARD); skel_row.pack(fill="x", padx=8, pady=4)
+        tk.Label(skel_row, text="Skeleton method", bg=CARD, fg=DIM,
+                 font=FONT_S, width=14, anchor="w").pack(side="left")
+        skel_cb = ttk.Combobox(skel_row, textvariable=self.s_skel_method,
+                               width=10, font=FONT_S, state="readonly",
+                               values=["auto", "guo_hall", "skimage", "distance", "zhang_suen"])
+        skel_cb.pack(side="left")
+        skel_cb.set("auto")
         tk.Frame(p, bg=CARD2, height=1).pack(fill="x", padx=8, pady=4)
         self._on_auto_toggle()
         sec("02  OUTPUT SIZE (mm)")
@@ -935,12 +1042,13 @@ class App(tk.Tk):
         try:
             strokes = image_to_strokes(
                 self.image_path, pw, ph,
-                auto        = self.s_auto.get(),
-                threshold   = self.s_thr.get(),
-                blur        = self.s_blur.get(),
-                min_px      = self.s_min.get(),
-                thin_res    = self.s_thin.get(),
-                progress_cb = lambda m, p: self.after(0, self._prog, m, p))
+                auto            = self.s_auto.get(),
+                threshold       = self.s_thr.get(),
+                blur            = self.s_blur.get(),
+                min_px          = self.s_min.get(),
+                thin_res        = self.s_thin.get(),
+                skeleton_method = self.s_skel_method.get(),
+                progress_cb     = lambda m, p: self.after(0, self._prog, m, p))
             self.strokes = strokes
             self.after(0, self._do_plan)
         except Exception as e:
