@@ -211,24 +211,26 @@ def manual_process_image(grey, threshold, blur_r):
     _, mask = cv2.threshold(grey, threshold, 255, cv2.THRESH_BINARY_INV)
     return mask
 
-def vectorize_with_potrace(binary_image):
-    if binary_image is None or binary_image.size == 0:
+def vectorize_with_potrace(skeleton_image):
+    """Convert 1-pixel skeleton to smooth vector strokes using Potrace.
+    Since input is already a 1-pixel skeleton, Potrace produces single midline paths."""
+    if skeleton_image is None or skeleton_image.size == 0:
         return []
-    if binary_image.dtype != np.uint8:
-        binary_image = (binary_image > 127).astype(np.uint8) * 255
-    h, w = binary_image.shape
+    if skeleton_image.dtype != np.uint8:
+        skeleton_image = (skeleton_image > 127).astype(np.uint8) * 255
+    h, w = skeleton_image.shape
     tmp_dir = tempfile.gettempdir()
     uid = str(os.getpid())
     pbm_path = os.path.join(tmp_dir, f"dd_{uid}.pbm")
     svg_path = os.path.join(tmp_dir, f"dd_{uid}.svg")
     try:
-        inverted = 255 - binary_image
+        inverted = 255 - skeleton_image
         ok = cv2.imwrite(pbm_path, inverted)
         if not ok:
             return []
         result = subprocess.run(
             ['potrace', pbm_path, '-s', '-o', svg_path,
-             '--turdsize', '2', '--alphamax', '1.0'],
+             '--turdsize', '1', '--alphamax', '0.5', '--opttolerance', '0.2'],
             capture_output=True, text=True, timeout=15,
             cwd=tmp_dir
         )
@@ -349,7 +351,6 @@ def skeleton_to_strokes(skel, h, w, scale, off_x, off_y, min_px=20, eps_px=1.0):
 def image_to_strokes(path, paper_w, paper_h,
                      auto=True, threshold=128, blur=1,
                      min_px=20, thin_res=256,
-                     zs_iters=40, erode_iters=0, prune_len=6,
                      progress_cb=None):
     def prog(m, p):
         if progress_cb: progress_cb(m, p)
@@ -370,25 +371,21 @@ def image_to_strokes(path, paper_w, paper_h,
     else:
         prog("Manual threshold...", 18)
         mask = manual_process_image(grey, threshold, blur)
-    if erode_iters > 0:
-        prog(f"Pre-eroding x{erode_iters}...", 30)
-        k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
-        mask = cv2.erode(mask, k, iterations=erode_iters)
+    prog("Skeletonizing (midline extraction)...", 30)
+    skel = _zhang_suen(mask, max_iters=40)
+    skel = _prune_skeleton(skel, min_len=6)
     scale = min(paper_w / w, paper_h / h)
     off_x = (paper_w - w * scale) / 2
     off_y = (paper_h - h * scale) / 2
     eps_px  = max(1.0, min(w,h) / 200.0)
-    prog("Vectorizing with Potrace...", 40)
-    strokes = vectorize_with_potrace(mask)
+    prog("Vectorizing skeleton with Potrace...", 50)
+    strokes = vectorize_with_potrace(skel)
     if not strokes:
-        prog("Potrace returned no strokes, falling back to skeletonization...", 50)
-        skel = _zhang_suen(mask, max_iters=zs_iters)
-        if prune_len > 0:
-            skel = _prune_skeleton(skel, prune_len)
+        prog("Potrace returned empty, using raw skeleton contours...", 70)
         strokes = skeleton_to_strokes(skel, h, w, scale, off_x, off_y, min_px, eps_px)
     if not strokes:
-        raise ValueError("No strokes found - try adjusting threshold, erode, or use a clearer image.")
-    prog("Scaling to mm...", 80)
+        raise ValueError("No strokes found - try adjusting threshold or use a clearer image.")
+    prog("Scaling to mm...", 85)
     def to_mm(px, py):
         return (round(float(px) * scale + off_x, 2),
                 round(float(h - py) * scale + off_y, 2))
@@ -547,9 +544,6 @@ class App(tk.Tk):
         self.s_min    = tk.IntVar(value=20)
         self.s_thin   = tk.IntVar(value=256)
         self.s_auto   = tk.BooleanVar(value=True)
-        self.s_erode  = tk.IntVar(value=0)
-        self.s_zs     = tk.IntVar(value=40)
-        self.s_prune  = tk.IntVar(value=6)
         self.s_step   = tk.IntVar(value=10)
         self.s_travel = tk.IntVar(value=50)
         self.e_wheel      = tk.StringVar(value=str(int(DEF_WHEEL_MM)))
@@ -724,13 +718,6 @@ class App(tk.Tk):
         sldr("Blur",        self.s_blur,  0,   5,  widgets_ref=self._manual_widgets)
         sldr("Min stroke",  self.s_min,   5, 100)
         sldr("Thinning px", self.s_thin, 50, 400)
-        tk.Label(p, text="-- skeleton --", bg=CARD, fg=DIM,
-                 font=FONT_XS, anchor="w").pack(fill="x", padx=12, pady=(4,0))
-        sldr("Pre-erode",  self.s_erode, 0,  8,
-             fmt=lambda v: f"{v}px" if v else "off")
-        sldr("ZS passes",  self.s_zs,    1, 40, fmt=lambda v: str(v))
-        sldr("Prune",      self.s_prune, 0, 20,
-             fmt=lambda v: f"{v}px" if v else "off")
         tk.Frame(p, bg=CARD2, height=1).pack(fill="x", padx=8, pady=4)
         self._on_auto_toggle()
         sec("02  OUTPUT SIZE (mm)")
@@ -953,9 +940,6 @@ class App(tk.Tk):
                 blur        = self.s_blur.get(),
                 min_px      = self.s_min.get(),
                 thin_res    = self.s_thin.get(),
-                zs_iters    = self.s_zs.get(),
-                erode_iters = self.s_erode.get(),
-                prune_len   = self.s_prune.get(),
                 progress_cb = lambda m, p: self.after(0, self._prog, m, p))
             self.strokes = strokes
             self.after(0, self._do_plan)
