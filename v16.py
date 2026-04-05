@@ -1,6 +1,6 @@
 """
-DIFF DRIVE PLOTTER - Potrace + GRBL Edition
-Pipeline: CLAHE -> Otsu -> Potrace Vectorization -> GRBL G0/G1
+DIFF DRIVE PLOTTER - Skeleton Path Tracer Edition
+Pipeline: CLAHE -> Otsu -> Skeleton -> Graph Path Tracing -> GRBL G0/G1
 """
 
 import tkinter as tk
@@ -9,7 +9,7 @@ import threading, time, os, math, subprocess, tempfile
 import cv2, numpy as np
 from PIL import Image, ImageTk, ImageDraw
 import serial, serial.tools.list_ports
-from svgelements import SVG, Path, Move, Line, Close, CubicBezier
+from collections import deque
 
 HAS_DEPS = True
 
@@ -211,98 +211,127 @@ def manual_process_image(grey, threshold, blur_r):
     _, mask = cv2.threshold(grey, threshold, 255, cv2.THRESH_BINARY_INV)
     return mask
 
-def _parse_potrace_svg(svg_path, h):
-    """Parse Potrace SVG output into list of stroke point lists."""
-    with open(svg_path, 'r') as f:
-        svg_content = f.read()
-    svg = SVG.parse(svg_content)
-    strokes = []
-    for element in svg.elements():
-        if isinstance(element, Path):
-            points = []
-            current_point = None
-            for segment in element:
-                if isinstance(segment, Move):
-                    if points and len(points) > 1:
-                        strokes.append(points)
-                        points = []
-                    current_point = (segment.end.x, segment.end.y)
-                    points.append(current_point)
-                elif isinstance(segment, (Line, Close)):
-                    if current_point is not None:
-                        current_point = (segment.end.x, segment.end.y)
-                        points.append(current_point)
-                elif isinstance(segment, CubicBezier):
-                    if current_point is not None:
-                        start = current_point
-                        end = (segment.end.x, segment.end.y)
-                        length = np.hypot(end[0]-start[0], end[1]-start[1])
-                        num_samples = max(3, int(length / 5))
-                        for i in range(1, num_samples + 1):
-                            t = i / num_samples
-                            x = (1-t)**3 * start[0] + 3*(1-t)**2*t * segment.control1.x + \
-                                3*(1-t)*t**2 * segment.control2.x + t**3 * end[0]
-                            y = (1-t)**3 * start[1] + 3*(1-t)**2*t * segment.control1.y + \
-                                3*(1-t)*t**2 * segment.control2.y + t**3 * end[1]
-                            points.append((x, y))
-                        current_point = end
-            if points and len(points) > 1:
-                strokes.append(points)
-    transformed = []
-    for stroke in strokes:
-        t = [(float(x), float(h - y)) for x, y in stroke]
-        transformed.append(t)
-    return transformed
+def _thin_to_1px(skel_img):
+    """Ensure skeleton is exactly 1 pixel wide using Zhang-Suen thinning."""
+    if skel_img is None or skel_img.size == 0:
+        return skel_img
+    return _zhang_suen(skel_img, max_iters=40)
 
-def vectorize_with_potrace(skeleton_image, use_center=False):
-    """Convert binary image to vector strokes using Potrace.
+def _trace_skeleton_paths(skel_img, min_px=5):
+    """Trace 1-pixel skeleton into stroke paths using graph traversal.
     
-    Args:
-        skeleton_image: Binary image (0/255)
-        use_center: If True, use Potrace --center mode for centerline tracing.
-                   If False, traces boundaries of filled regions.
+    Treats the skeleton as a graph where:
+    - Endpoints (1 neighbor) and junctions (3+ neighbors) are nodes
+    - Paths between nodes are edges
+    
+    This produces EXACTLY ONE path per skeleton segment - no double outlines.
     """
-    if skeleton_image is None or skeleton_image.size == 0:
+    if skel_img is None or skel_img.size == 0:
         return []
-    if skeleton_image.dtype != np.uint8:
-        skeleton_image = (skeleton_image > 127).astype(np.uint8) * 255
-    h, w = skeleton_image.shape
-    tmp_dir = tempfile.gettempdir()
-    uid = str(os.getpid())
-    pbm_path = os.path.join(tmp_dir, f"dd_{uid}.pbm")
-    svg_path = os.path.join(tmp_dir, f"dd_{uid}.svg")
-    try:
-        if use_center:
-            # Centerline mode: white lines on black background
-            binary = skeleton_image.copy()
-        else:
-            # Boundary mode: invert so filled regions are white
-            binary = 255 - skeleton_image
-        ok = cv2.imwrite(pbm_path, binary)
-        if not ok:
-            return []
-        cmd = ['potrace', pbm_path, '-s', '-o', svg_path,
-               '--turdsize', '1', '--alphamax', '0.5', '--opttolerance', '0.2']
-        if use_center:
-            cmd.insert(2, '--center')
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=15,
-            cwd=tmp_dir
-        )
-        if result.returncode != 0:
-            return []
-        if not os.path.exists(svg_path):
-            return []
-        return _parse_potrace_svg(svg_path, h)
-    except Exception:
-        return []
-    finally:
-        for p in [pbm_path, svg_path]:
-            try:
-                if os.path.exists(p):
-                    os.unlink(p)
-            except:
-                pass
+    # Ensure truly 1-pixel wide
+    binary = (skel_img > 0).astype(np.uint8)
+    binary = _thin_to_1px(binary)
+    h, w = binary.shape
+    # Count 8-connected neighbors for each pixel
+    k = np.ones((3, 3), dtype=np.uint8)
+    neighbor_count = cv2.filter2D(binary, -1, k) - binary
+    # Find endpoints (1 neighbor) and junctions (3+ neighbors)
+    endpoints = (binary == 1) & (neighbor_count == 1)
+    junctions = (binary == 1) & (neighbor_count >= 3)
+    # 8-connected neighbor offsets
+    neighbors_8 = [(-1,-1), (-1,0), (-1,1),
+                   (0,-1),          (0,1),
+                   (1,-1),  (1,0),  (1,1)]
+    visited = np.zeros_like(binary, dtype=bool)
+    strokes = []
+    def get_neighbors(r, c):
+        for dr, dc in neighbors_8:
+            nr, nc = r + dr, c + dc
+            if 0 <= nr < h and 0 <= nc < w and binary[nr, nc] and not visited[nr, nc]:
+                yield nr, nc
+    def trace_path(start_r, start_c, stop_at_nodes=True):
+        """Trace a path from start point, optionally stopping at nodes."""
+        path = [(start_c, start_r)]
+        visited[start_r, start_c] = True
+        cr, cc = start_r, start_c
+        while True:
+            nbrs = list(get_neighbors(cr, cc))
+            if not nbrs:
+                break
+            if stop_at_nodes and junctions[cr, cc] and len(path) > 1:
+                break
+            nr, nc = nbrs[0]
+            visited[nr, nc] = True
+            path.append((nc, nr))
+            cr, cc = nr, nc
+            if stop_at_nodes and junctions[cr, cc]:
+                break
+        return path
+    # Phase 1: Trace paths from endpoints to nearest node
+    ep_rows, ep_cols = np.where(endpoints)
+    for start_r, start_c in zip(ep_rows, ep_cols):
+        if visited[start_r, start_c]:
+            continue
+        path = trace_path(start_r, start_c, stop_at_nodes=True)
+        if len(path) >= min_px:
+            strokes.append(path)
+    # Phase 2: Trace paths between junctions
+    junc_rows, junc_cols = np.where(junctions)
+    for start_r, start_c in zip(junc_rows, junc_cols):
+        if visited[start_r, start_c]:
+            continue
+        for dr, dc in neighbors_8:
+            nr, nc = start_r + dr, start_c + dc
+            if 0 <= nr < h and 0 <= nc < w and binary[nr, nc] and not visited[nr, nc]:
+                path = [(start_c, start_r)]
+                visited[start_r, start_c] = True
+                visited[nr, nc] = True
+                path.append((nc, nr))
+                cr, cc = nr, nc
+                while True:
+                    nbrs = list(get_neighbors(cr, cc))
+                    if not nbrs:
+                        break
+                    if junctions[cr, cc] and len(path) > 2:
+                        break
+                    nr, nc = nbrs[0]
+                    visited[nr, nc] = True
+                    path.append((nc, nr))
+                    cr, cc = nr, nc
+                    if junctions[cr, cc]:
+                        break
+                if len(path) >= min_px:
+                    strokes.append(path)
+    # Phase 3: Handle isolated loops (no endpoints, no junctions)
+    remaining = binary & ~visited
+    while remaining.any():
+        rows, cols = np.where(remaining)
+        start_r, start_c = rows[0], cols[0]
+        path = [(start_c, start_r)]
+        visited[start_r, start_c] = True
+        cr, cc = start_r, start_c
+        first = True
+        while True:
+            nbrs = []
+            for dr, dc in neighbors_8:
+                nr, nc = cr + dr, cc + dc
+                if 0 <= nr < h and 0 <= nc < w and binary[nr, nc] and not visited[nr, nc]:
+                    if first and (nr, nc) == (start_r, start_c):
+                        continue
+                    nbrs.append((nr, nc))
+            if not nbrs:
+                break
+            nr, nc = nbrs[0]
+            visited[nr, nc] = True
+            path.append((nc, nr))
+            cr, cc = nr, nc
+            first = False
+            if (cr, cc) == (start_r, start_c):
+                break
+        if len(path) >= min_px:
+            strokes.append(path)
+        remaining = binary & ~visited
+    return strokes
 
 def _distance_transform_centerline(mask):
     """Extract centerline using distance transform + ridge detection.
@@ -410,7 +439,7 @@ def _zhang_suen(binary_img, max_iters=40):
             break
     return (img*255).astype(np.uint8)
 
-def _prune_skeleton(skel_img, min_len=6):
+def _prune_skeleton(skel_img, min_len=3):
     img = (skel_img > 0).astype(np.uint8)
     k   = np.ones((3,3), np.uint8)
     for _ in range(min_len):
@@ -420,32 +449,9 @@ def _prune_skeleton(skel_img, min_len=6):
         img[tips] = 0
     return (img*255).astype(np.uint8)
 
-def skeleton_to_strokes(skel, h, w, scale, off_x, off_y, min_px=20, eps_px=1.0):
-    contours, _ = cv2.findContours(skel, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    contours = [c for c in contours if cv2.arcLength(c, False) >= min_px]
-    if not contours:
-        return []
-    MIN_MM  = max(0.5, scale * 0.8)
-    def to_mm(px, py):
-        return (round(float(px) * scale + off_x, 2),
-                round(float(h - py) * scale + off_y, 2))
-    strokes = []
-    for cnt in contours:
-        simp = cv2.approxPolyDP(cnt, eps_px, False).squeeze()
-        if simp.ndim == 1: simp = simp[None,:]
-        if len(simp) < 2:  continue
-        mm, last = [], None
-        for pt in simp:
-            m = to_mm(float(pt[0]), float(pt[1]))
-            if last is None or math.hypot(m[0]-last[0], m[1]-last[1]) >= MIN_MM:
-                mm.append(m); last = m
-        if len(mm) >= 2:
-            strokes.append(mm)
-    return strokes
-
 def image_to_strokes(path, paper_w, paper_h,
                      auto=True, threshold=128, blur=1,
-                     min_px=20, thin_res=256,
+                     min_px=5, thin_res=256,
                      skeleton_method='auto',
                      progress_cb=None):
     def prog(m, p):
@@ -472,29 +478,27 @@ def image_to_strokes(path, paper_w, paper_h,
     if skel is None or not np.any(skel > 0):
         prog("Centerline extraction failed, trying fallback...", 40)
         skel = extract_centerline(mask, method='zhang_suen')
-    skel = _prune_skeleton(skel, min_len=6)
+    skel_pixels = np.count_nonzero(skel > 0)
+    print(f"[DEBUG] Skeleton pixels: {skel_pixels}")
+    skel = _prune_skeleton(skel, min_len=3)
+    skel_pruned_pixels = np.count_nonzero(skel > 0)
+    print(f"[DEBUG] After pruning: {skel_pruned_pixels} pixels")
     scale = min(paper_w / w, paper_h / h)
     off_x = (paper_w - w * scale) / 2
     off_y = (paper_h - h * scale) / 2
-    eps_px  = max(1.0, min(w,h) / 200.0)
-    prog("Vectorizing skeleton with Potrace...", 50)
-    strokes = vectorize_with_potrace(skel)
-    if not strokes:
-        prog("Potrace returned empty, using raw skeleton contours...", 70)
-        strokes = skeleton_to_strokes(skel, h, w, scale, off_x, off_y, min_px, eps_px)
-    if not strokes:
+    prog("Tracing skeleton paths...", 50)
+    strokes_px = _trace_skeleton_paths(skel, min_px=min_px)
+    print(f"[DEBUG] Strokes found: {len(strokes_px)}")
+    if not strokes_px:
         raise ValueError("No strokes found - try adjusting threshold or use a clearer image.")
     prog("Scaling to mm...", 85)
     def to_mm(px, py):
         return (round(float(px) * scale + off_x, 2),
                 round(float(h - py) * scale + off_y, 2))
-    if strokes and isinstance(strokes[0][0], tuple) and len(strokes[0][0]) == 2:
-        if isinstance(strokes[0][0][0], (int, float)):
-            scaled_strokes = []
-            for stroke in strokes:
-                scaled = [to_mm(p[0], p[1]) for p in stroke]
-                scaled_strokes.append(scaled)
-            strokes = scaled_strokes
+    strokes = []
+    for stroke in strokes_px:
+        scaled = [to_mm(p[0], p[1]) for p in stroke]
+        strokes.append(scaled)
     prog(f"Done: {len(strokes)} strokes", 100)
     return strokes
 
@@ -640,7 +644,7 @@ class App(tk.Tk):
         self.prog_lbl  = tk.StringVar(value="idle")
         self.s_thr    = tk.IntVar(value=128)
         self.s_blur   = tk.IntVar(value=1)
-        self.s_min    = tk.IntVar(value=20)
+        self.s_min    = tk.IntVar(value=3)
         self.s_thin   = tk.IntVar(value=256)
         self.s_auto   = tk.BooleanVar(value=True)
         self.s_step   = tk.IntVar(value=10)
