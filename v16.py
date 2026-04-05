@@ -1,64 +1,43 @@
 """
-DIFF DRIVE PLOTTER v11
-Auto image pipeline: CLAHE → Otsu → ZS skeleton. Scroll-to-tune entries.
-
-MATH (proven, don't change):
-  Heading convention: 0° = +Y (north/up on paper). Increases CW.
-  bearing  = atan2(dx, dy)        # dx=east=+X, dy=south=+Y
-  x       += fwd * sin(h_rad)
-  y       += fwd * cos(h_rad)
-  dh       = degrees((stR - stL) / STEPS_PER_MM / AXLE_MM)
-
-  STEPS_PER_MM  = (200 × MICROSTEPS) / (π × WHEEL_D_MM)
-  STEPS_PER_DEG = (π × AXLE_MM / 360) × STEPS_PER_MM
-    ← each wheel travels  π×AXLE×(deg/360)  mm per deg of robot rotation
-
-  Rotation (INVERT_L=false, INVERT_R=true):
-    CCW / left (+deg):  stL = -steps,  stR = +steps
-    CW  / right (-deg): stL = +steps,  stR = -steps
+DIFF DRIVE PLOTTER - Potrace + GRBL Edition
+Pipeline: CLAHE -> Otsu -> Potrace Vectorization -> GRBL G0/G1
 """
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-import threading, time, os, math
+import threading, time, os, math, subprocess, tempfile
+import cv2, numpy as np
+from PIL import Image, ImageTk, ImageDraw
+import serial, serial.tools.list_ports
+from svgelements import SVG, Path, Move, Line, Close, CubicBezier
 
-try:
-    import cv2, numpy as np
-    from PIL import Image, ImageTk, ImageDraw
-    import serial, serial.tools.list_ports
-    HAS_DEPS = True
-except ImportError as e:
-    HAS_DEPS = False
+HAS_DEPS = True
 
 # ═══════════════════════════════════════════════════════════════
 #  CONSTANTS
 # ═══════════════════════════════════════════════════════════════
 BAUD         = 115200
-INTER_CMD_S  = 0.002      # seconds between serial commands
-FULL_STEPS   = 200        # per revolution
-MICROSTEPS   = 32         # DRV8825 at M0=M1=M2=HIGH
+INTER_CMD_S  = 0.002
+FULL_STEPS   = 200
+MICROSTEPS   = 32
 
-# Default robot geometry (adjust via text boxes then UPDATE)
 DEF_WHEEL_MM  = 60.0
 DEF_AXLE_MM   = 120.0
 DEF_DRAW_US   = 300
-DEF_TRAVEL_US = 120      # faster speed during travel (pen up)
+DEF_TRAVEL_US = 120
 DEF_PAPER_W   = 150.0
 DEF_PAPER_H   = 150.0
-DEF_PARK_MM   = 20.0     # how far outside drawing area to park (start/end)
+DEF_PARK_MM   = 20.0
 
-# Servo defaults
 DEF_SERVO_PIN  = 11
-DEF_PEN_DOWN   = 30      # servo angle when pen touches paper
-DEF_PEN_UP     = 90      # servo angle when pen is lifted
+DEF_PEN_DOWN   = 30
+DEF_PEN_UP     = 90
 
-# Colours — warm light theme
 BG     = "#f5f0eb"; CARD   = "#ffffff"; CARD2  = "#ede8e2"
 ACC    = "#b05a00"; ACC2   = "#7c3aed"; ACC3   = "#0369a1"
 DIM    = "#6b7280"; WHITE  = "#1f2937"; GREEN  = "#166534"
 RED    = "#dc2626"; AMBER  = "#d97706"
 
-# Fonts (Increased sizes)
 FONT_XL   = ("Courier", 14, "bold")
 FONT_L    = ("Courier", 11, "bold")
 FONT_M_B  = ("Courier", 10, "bold")
@@ -67,9 +46,8 @@ FONT_S_B  = ("Courier", 9, "bold")
 FONT_S    = ("Courier", 9)
 FONT_XS   = ("Courier", 8)
 
-
 # ═══════════════════════════════════════════════════════════════
-#  KINEMATICS  (module-level, use globals updated by sliders)
+#  KINEMATICS
 # ═══════════════════════════════════════════════════════════════
 WHEEL_MM      = DEF_WHEEL_MM
 AXLE_MM       = DEF_AXLE_MM
@@ -84,7 +62,6 @@ def update_geometry(wheel_mm, axle_mm):
     STEPS_PER_DEG = (math.pi * AXLE_MM / 360.0) * STEPS_PER_MM
 
 def pose_update(stL, stR, x, y, h):
-    """Apply one STEPS command to pose. Returns new (x, y, h)."""
     dl  = stL / STEPS_PER_MM
     dr  = stR / STEPS_PER_MM
     fwd = (dl + dr) / 2.0
@@ -96,9 +73,6 @@ def pose_update(stL, stR, x, y, h):
     return x, y, h
 
 def rotate_steps(deg):
-    """Step counts for in-place rotation.
-    +deg = CCW: stL negative, stR positive.
-    -deg = CW:  stL positive, stR negative."""
     s = int(round(abs(deg) * STEPS_PER_DEG))
     if deg >= 0:
         return -s, +s
@@ -106,8 +80,6 @@ def rotate_steps(deg):
         return +s, -s
 
 def resample(pts, step_mm):
-    """Resample polyline to equal-length steps.
-    Small steps → tiny angle changes → smooth motion."""
     if len(pts) < 2:
         return list(pts)
     out = [pts[0]]
@@ -139,47 +111,31 @@ def resample(pts, step_mm):
 def stroke_to_moves(pts, step_mm, is_draw, init_h):
     if len(pts) < 2:
         return []
-
     rpts  = resample(pts, step_mm)
     moves = []
     cur_h = init_h
-
     for i in range(1, len(rpts)):
         dx   = rpts[i][0] - rpts[i-1][0]
         dy   = rpts[i][1] - rpts[i-1][1]
         dist = math.hypot(dx, dy)
         if dist < 0.05:
             continue
-
-        bear = math.degrees(math.atan2(dx, dy))   # 0=+Y nautical
-
+        bear = math.degrees(math.atan2(dx, dy))
         if cur_h is None:
             cur_h = bear
-
-        rot = (bear - cur_h + 180) % 360 - 180    # −180..+180
-
-        # Rotate in place if significant (>0.5°)
+        rot = (bear - cur_h + 180) % 360 - 180
         if abs(rot) > 0.5:
             rL, rR = rotate_steps(rot)
             if rL != 0 or rR != 0:
                 moves.append((rL, rR, f"R{rot:+.1f}", is_draw))
             cur_h = bear
-
-        # Drive straight
         steps = int(round(dist * STEPS_PER_MM))
         if steps > 0:
             moves.append((steps, steps, f"{'D' if is_draw else 'T'}{dist:.1f}", is_draw))
-
     return moves
 
 def plan_moves(strokes, step_mm, travel_step_mm, park_mm=20.0):
-    """Convert all strokes to flat move list with travel between strokes.
-    Each move is a 5-tuple: (stL, stR, label, is_draw, pen_change)
-    pen_change: None = no change, True = pen down, False = pen up
-    Robot starts/ends at park position: (0, -park_mm).
-    """
     all_moves = []
-    # Start at park position
     cur_x, cur_y = 0.0, -park_mm
     cur_h        = 0.0
     pen_is_down  = False
@@ -195,7 +151,7 @@ def plan_moves(strokes, step_mm, travel_step_mm, park_mm=20.0):
         for idx, m in enumerate(tmoves):
             pc = None
             if not pen_change_sent and pen_is_down:
-                pc = False          # lift pen before first travel step
+                pc = False
                 pen_is_down = False
                 pen_change_sent = True
             all_moves.append((m[0], m[1], m[2], False, pc))
@@ -207,26 +163,20 @@ def plan_moves(strokes, step_mm, travel_step_mm, park_mm=20.0):
         sx, sy = stroke[0]
         travel_to(sx, sy)
         cur_x, cur_y = sx, sy
-
-        # Draw stroke — put pen down at start
         dmoves = stroke_to_moves(stroke, step_mm, True, cur_h)
         for idx, m in enumerate(dmoves):
             pc = None
             if idx == 0 and not pen_is_down:
-                pc = True           # push pen down at stroke start
+                pc = True
                 pen_is_down = True
             all_moves.append((m[0], m[1], m[2], True, pc))
             cur_x, cur_y, cur_h = pose_update(m[0], m[1], cur_x, cur_y, cur_h)
         cur_x, cur_y = stroke[-1]
 
-    # Return to park position
     travel_to(0.0, -park_mm)
-
     return all_moves
 
 def simulate_moves(all_moves, park_mm=20.0):
-    """Dead-reckon all moves. Returns list of (x,y,is_draw) for preview/live.
-    Starts from park position (0, -park_mm) matching plan_moves."""
     pts  = [(0.0, -park_mm, False)]
     x, y, h = 0.0, -park_mm, 0.0
     for stL, stR, lbl, is_draw, *_ in all_moves:
@@ -234,15 +184,112 @@ def simulate_moves(all_moves, park_mm=20.0):
         pts.append((x, y, is_draw))
     return pts
 
-
 # ═══════════════════════════════════════════════════════════════
-#  IMAGE → STROKES
+#  IMAGE PROCESSING
 # ═══════════════════════════════════════════════════════════════
 
-# ── Zhang-Suen thinning ────────────────────────────────────────────────
+def auto_process_image(grey):
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    eq    = clahe.apply(grey)
+    blur  = cv2.GaussianBlur(eq, (3, 3), 0)
+    otsu_val, mask = cv2.threshold(blur, 0, 255,
+                                   cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    if np.mean(grey) > 200:
+        pass
+    elif np.mean(mask) > 128:
+        mask = cv2.bitwise_not(mask)
+    k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
+    return mask, int(otsu_val)
+
+def manual_process_image(grey, threshold, blur_r):
+    if blur_r > 0:
+        k    = max(3, blur_r * 2 + 1)
+        grey = cv2.GaussianBlur(grey, (k, k), 0)
+    if np.mean(grey) < 128:
+        grey = cv2.bitwise_not(grey)
+    _, mask = cv2.threshold(grey, threshold, 255, cv2.THRESH_BINARY_INV)
+    return mask
+
+def vectorize_with_potrace(binary_image):
+    if binary_image is None or binary_image.size == 0:
+        return []
+    if binary_image.dtype != np.uint8:
+        binary_image = (binary_image > 127).astype(np.uint8) * 255
+    h, w = binary_image.shape
+    tmp_dir = tempfile.gettempdir()
+    uid = str(os.getpid())
+    pbm_path = os.path.join(tmp_dir, f"dd_{uid}.pbm")
+    svg_path = os.path.join(tmp_dir, f"dd_{uid}.svg")
+    try:
+        inverted = 255 - binary_image
+        ok = cv2.imwrite(pbm_path, inverted)
+        if not ok:
+            return []
+        result = subprocess.run(
+            ['potrace', pbm_path, '-s', '-o', svg_path,
+             '--turdsize', '2', '--alphamax', '1.0'],
+            capture_output=True, text=True, timeout=15,
+            cwd=tmp_dir
+        )
+        if result.returncode != 0:
+            return []
+        if not os.path.exists(svg_path):
+            return []
+        with open(svg_path, 'r') as f:
+            svg_content = f.read()
+        svg = SVG.parse(svg_content)
+        strokes = []
+        for element in svg.elements():
+            if isinstance(element, Path):
+                points = []
+                current_point = None
+                for segment in element:
+                    if isinstance(segment, Move):
+                        if points and len(points) > 1:
+                            strokes.append(points)
+                            points = []
+                        current_point = (segment.end.x, segment.end.y)
+                        points.append(current_point)
+                    elif isinstance(segment, (Line, Close)):
+                        if current_point is not None:
+                            current_point = (segment.end.x, segment.end.y)
+                            points.append(current_point)
+                    elif isinstance(segment, CubicBezier):
+                        if current_point is not None:
+                            start = current_point
+                            end = (segment.end.x, segment.end.y)
+                            length = np.hypot(end[0]-start[0], end[1]-start[1])
+                            num_samples = max(3, int(length / 5))
+                            for i in range(1, num_samples + 1):
+                                t = i / num_samples
+                                x = (1-t)**3 * start[0] + 3*(1-t)**2*t * segment.control1.x + \
+                                    3*(1-t)*t**2 * segment.control2.x + t**3 * end[0]
+                                y = (1-t)**3 * start[1] + 3*(1-t)**2*t * segment.control1.y + \
+                                    3*(1-t)*t**2 * segment.control2.y + t**3 * end[1]
+                                points.append((x, y))
+                            current_point = end
+                if points and len(points) > 1:
+                    strokes.append(points)
+        transformed_strokes = []
+        for stroke in strokes:
+            transformed = []
+            for x, y in stroke:
+                plotter_y = h - y
+                transformed.append((float(x), float(plotter_y)))
+            transformed_strokes.append(transformed)
+        return transformed_strokes
+    except Exception:
+        return []
+    finally:
+        for p in [pbm_path, svg_path]:
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except:
+                pass
+
 def _zhang_suen(binary_img, max_iters=40):
-    """Zhang-Suen thinning. max_iters rounds (each = 2 sub-steps).
-    Exits early if converged. Returns 1-px skeleton uint8."""
     if max_iters <= 0:
         return binary_img.copy()
     img = (binary_img > 0).astype(np.uint8)
@@ -266,9 +313,7 @@ def _zhang_suen(binary_img, max_iters=40):
             break
     return (img*255).astype(np.uint8)
 
-
 def _prune_skeleton(skel_img, min_len=6):
-    """Remove short dangling branches (bird-leg artifacts at junctions)."""
     img = (skel_img > 0).astype(np.uint8)
     k   = np.ones((3,3), np.uint8)
     for _ in range(min_len):
@@ -278,125 +323,16 @@ def _prune_skeleton(skel_img, min_len=6):
         img[tips] = 0
     return (img*255).astype(np.uint8)
 
-
-def auto_process_image(grey):
-    """Fully automatic image→binary mask pipeline.
-    Steps:
-      1. CLAHE — adaptive contrast normalisation (handles dark/light/uneven photos)
-      2. Otsu threshold — finds optimal threshold from pixel histogram automatically
-      3. Polarity fix — ensure lines are foreground (white)
-      4. Morphological close — bridges small gaps in strokes
-    Returns binary uint8 mask (255=stroke)."""
-    # 1. CLAHE: clip limit 2.0, 8×8 tile grid
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    eq    = clahe.apply(grey)
-    # 2. Otsu: finds the ideal threshold automatically from the histogram
-    blur  = cv2.GaussianBlur(eq, (3, 3), 0)
-    otsu_val, mask = cv2.threshold(blur, 0, 255,
-                                   cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-    # 3. Polarity: if mean of original is dark, image was already dark-on-light
-    #    → THRESH_BINARY_INV is correct. But if mean >128 (light-on-dark) flip.
-    if np.mean(grey) > 200:          # very bright background — already correct
-        pass
-    elif np.mean(mask) > 128:        # more white than black after threshold → flip
-        mask = cv2.bitwise_not(mask)
-    # 4. Close small gaps (1 iteration, 3×3 ellipse)
-    k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
-    return mask, int(otsu_val)
-
-
-def manual_process_image(grey, threshold, blur_r):
-    """Manual threshold pipeline for fine-tuning overrides."""
-    if blur_r > 0:
-        k    = max(3, blur_r * 2 + 1)
-        grey = cv2.GaussianBlur(grey, (k, k), 0)
-    if np.mean(grey) < 128:
-        grey = cv2.bitwise_not(grey)
-    _, mask = cv2.threshold(grey, threshold, 255, cv2.THRESH_BINARY_INV)
-    return mask
-
-
-def image_to_strokes(path, paper_w, paper_h,
-                     auto=True,
-                     threshold=128, blur=1,
-                     min_px=20, thin_res=256,
-                     zs_iters=40, erode_iters=0, prune_len=6,
-                     progress_cb=None):
-    """Convert image file to list of mm-coordinate polyline strokes.
-
-    auto=True  → CLAHE + Otsu (no manual params needed)
-    auto=False → manual threshold / blur
-
-    Skeleton pipeline (both modes):
-      optional erosion → Zhang-Suen thinning → branch pruning → findContours
-    """
-    def prog(m, p):
-        if progress_cb: progress_cb(m, p)
-
-    prog("Loading…", 5)
-    img = cv2.imread(path)
-    if img is None:
-        raise ValueError(f"Cannot open: {path}")
-
-    # ── Resize to working resolution ───────────────────────────────────
-    # Flip is NOT applied here — coordinate mapping handles orientation.
-    h, w = img.shape[:2]
-    sc   = min(thin_res / w, thin_res / h)
-    img  = cv2.resize(img, (max(1,int(w*sc)), max(1,int(h*sc))),
-                      interpolation=cv2.INTER_AREA)
-    h, w = img.shape[:2]
-    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-    # ── Threshold ──────────────────────────────────────────────────────
-    if auto:
-        prog("Auto-contrast (CLAHE) + Otsu threshold…", 18)
-        mask, otsu_val = auto_process_image(grey)
-        prog(f"Otsu threshold = {otsu_val}", 25)
-    else:
-        prog("Manual threshold…", 18)
-        mask = manual_process_image(grey, threshold, blur)
-
-    # ── Pre-erosion (optional, thins thick blobs before ZS) ────────────
-    if erode_iters > 0:
-        prog(f"Pre-eroding ×{erode_iters}…", 30)
-        k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
-        mask = cv2.erode(mask, k, iterations=erode_iters)
-
-    # ── Zhang-Suen skeleton ────────────────────────────────────────────
-    prog(f"Skeletonizing (Zhang-Suen ×{zs_iters})…", 38)
-    skel = _zhang_suen(mask, max_iters=zs_iters)
-
-    # ── Branch pruning ─────────────────────────────────────────────────
-    if prune_len > 0:
-        prog(f"Pruning branches ≤{prune_len}px…", 48)
-        skel = _prune_skeleton(skel, prune_len)
-
-    # ── FindContours on 1-px skeleton ─────────────────────────────────
-    prog("Contours…", 55)
+def skeleton_to_strokes(skel, h, w, scale, off_x, off_y, min_px=20, eps_px=1.0):
     contours, _ = cv2.findContours(skel, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
     contours = [c for c in contours if cv2.arcLength(c, False) >= min_px]
     if not contours:
-        raise ValueError("No strokes found — try lowering Threshold or Min stroke.")
-
-    # ── Scale pixel coords → mm ────────────────────────────────────────
-    # Image pixel (0,0) = top-left. Robot (0,0) = home position.
-    # Image y increases downward; robot y increases away from home.
-    # Flip py so image-top → robot far-end, image-bottom → robot near home.
-    # This makes the preview and physical draw both appear upright.
-    prog("Scaling to mm…", 60)
-    scale = min(paper_w / w, paper_h / h)
-    off_x = (paper_w - w * scale) / 2
-    off_y = (paper_h - h * scale) / 2
-
+        return []
+    MIN_MM  = max(0.5, scale * 0.8)
     def to_mm(px, py):
         return (round(float(px) * scale + off_x, 2),
-                round(float(h - py) * scale + off_y, 2))   # flip Y
-
-    MIN_MM  = max(0.5, scale * 0.8)
-    eps_px  = max(1.0, min(w,h) / 200.0)
+                round(float(h - py) * scale + off_y, 2))
     strokes = []
-
     for cnt in contours:
         simp = cv2.approxPolyDP(cnt, eps_px, False).squeeze()
         if simp.ndim == 1: simp = simp[None,:]
@@ -408,51 +344,72 @@ def image_to_strokes(path, paper_w, paper_h,
                 mm.append(m); last = m
         if len(mm) >= 2:
             strokes.append(mm)
+    return strokes
 
+def image_to_strokes(path, paper_w, paper_h,
+                     auto=True, threshold=128, blur=1,
+                     min_px=20, thin_res=256,
+                     zs_iters=40, erode_iters=0, prune_len=6,
+                     progress_cb=None):
+    def prog(m, p):
+        if progress_cb: progress_cb(m, p)
+    prog("Loading...", 5)
+    img = cv2.imread(path)
+    if img is None:
+        raise ValueError(f"Cannot open: {path}")
+    h, w = img.shape[:2]
+    sc   = min(thin_res / w, thin_res / h)
+    img  = cv2.resize(img, (max(1,int(w*sc)), max(1,int(h*sc))),
+                      interpolation=cv2.INTER_AREA)
+    h, w = img.shape[:2]
+    grey = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    if auto:
+        prog("Auto-contrast (CLAHE) + Otsu...", 18)
+        mask, otsu_val = auto_process_image(grey)
+        prog(f"Otsu threshold = {otsu_val}", 25)
+    else:
+        prog("Manual threshold...", 18)
+        mask = manual_process_image(grey, threshold, blur)
+    if erode_iters > 0:
+        prog(f"Pre-eroding x{erode_iters}...", 30)
+        k    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3,3))
+        mask = cv2.erode(mask, k, iterations=erode_iters)
+    scale = min(paper_w / w, paper_h / h)
+    off_x = (paper_w - w * scale) / 2
+    off_y = (paper_h - h * scale) / 2
+    eps_px  = max(1.0, min(w,h) / 200.0)
+    prog("Vectorizing with Potrace...", 40)
+    strokes = vectorize_with_potrace(mask)
     if not strokes:
-        raise ValueError("No strokes after simplification.")
-
-    # ── Nearest-neighbour ordering ─────────────────────────────────────
-    prog(f"Ordering {len(strokes)} strokes…", 72)
-    ordered, remaining, cur = [], list(range(len(strokes))), (0.0, 0.0)
-    while remaining:
-        best, bd, brev = None, float("inf"), False
-        for idx in remaining:
-            s  = strokes[idx]
-            df = math.hypot(cur[0]-s[0][0],  cur[1]-s[0][1])
-            dr = math.hypot(cur[0]-s[-1][0], cur[1]-s[-1][1])
-            d  = min(df, dr)
-            if d < bd: bd=d; best=idx; brev=(dr<df)
-        remaining.remove(best)
-        s = strokes[best]
-        if brev: s = list(reversed(s))
-        ordered.append(s); cur = s[-1]
-
-    # ── Stitch nearby strokes ──────────────────────────────────────────
-    prog("Stitching…", 90)
-    chained, cc = [], list(ordered[0])
-    for s in ordered[1:]:
-        if math.hypot(cc[-1][0]-s[0][0], cc[-1][1]-s[0][1]) <= 3.0:
-            cc.extend(s[1:])
-        else:
-            chained.append(cc); cc = list(s)
-    chained.append(cc)
-
-    prog(f"Done: {len(chained)} strokes", 100)
-    return chained
+        prog("Potrace returned no strokes, falling back to skeletonization...", 50)
+        skel = _zhang_suen(mask, max_iters=zs_iters)
+        if prune_len > 0:
+            skel = _prune_skeleton(skel, prune_len)
+        strokes = skeleton_to_strokes(skel, h, w, scale, off_x, off_y, min_px, eps_px)
+    if not strokes:
+        raise ValueError("No strokes found - try adjusting threshold, erode, or use a clearer image.")
+    prog("Scaling to mm...", 80)
+    def to_mm(px, py):
+        return (round(float(px) * scale + off_x, 2),
+                round(float(h - py) * scale + off_y, 2))
+    if strokes and isinstance(strokes[0][0], tuple) and len(strokes[0][0]) == 2:
+        if isinstance(strokes[0][0][0], (int, float)):
+            scaled_strokes = []
+            for stroke in strokes:
+                scaled = [to_mm(p[0], p[1]) for p in stroke]
+                scaled_strokes.append(scaled)
+            strokes = scaled_strokes
+    prog(f"Done: {len(strokes)} strokes", 100)
+    return strokes
 
 def render_preview(sim_pts, paper_w, paper_h, W, H, park_mm=20.0, mirror_y=False):
-    """Render path preview. Drawing area only; park travel clamped to canvas edge."""
     img  = Image.new("RGB", (W, H), (240, 238, 232))
     draw = ImageDraw.Draw(img)
     sx, sy = W / paper_w, H / paper_h
-
     def to_screen(x, y):
-        return x * sx, (paper_h - y) * sy   # flip Y: image top = paper_h
-
+        return x * sx, (paper_h - y) * sy
     def clamp(px, py):
         return max(-2, min(W+2, px)), max(-2, min(H+2, py))
-
     prev = None
     for x, y, is_draw in sim_pts:
         if prev is not None:
@@ -463,9 +420,8 @@ def render_preview(sim_pts, paper_w, paper_h, W, H, park_mm=20.0, mirror_y=False
         prev = (x, y, is_draw)
     return img
 
-
 # ═══════════════════════════════════════════════════════════════
-#  SERIAL
+#  SERIAL - GRBL G0/G1 Protocol
 # ═══════════════════════════════════════════════════════════════
 
 class PlotterSerial:
@@ -492,7 +448,6 @@ class PlotterSerial:
         if not self.is_open():
             return
         try:
-            self.ser.reset_output_buffer()
             self.ser.write((cmd.strip() + "\n").encode())
             self.ser.flush()
         except Exception:
@@ -510,14 +465,13 @@ class PlotterSerial:
                 n = self.ser.in_waiting
                 if n:
                     buf += self.ser.read(n)
-                    dec = buf.decode(errors="replace").strip()
-                    if b"OK"   in buf: return dec
-                    if b"ERR"  in buf: raise RuntimeError(dec)
-                    if b"WARN" in buf: return dec
+                    if b"OK"   in buf: return buf.decode(errors="replace").strip()
+                    if b"ERR"  in buf: raise RuntimeError(buf.decode(errors="replace").strip())
+                    if b"WARN" in buf: return buf.decode(errors="replace").strip()
             except (IOError, OSError) as e:
                 raise IOError(str(e))
             time.sleep(0.004)
-        raise TimeoutError(f"No OK after {timeout:.0f}s — 12V connected?")
+        raise TimeoutError(f"No OK after {timeout:.0f}s")
 
     def ping(self):
         if not self.is_open():
@@ -537,13 +491,11 @@ class PlotterSerial:
         self.ser.write(f"STEPS L:{stL} R:{stR}\n".encode())
         return self.wait_ok(timeout=timeout, stop_fn=stop_fn)
 
-    def send_pen(self, down: bool):
-        """Send PEN DOWN or PEN UP command."""
+    def send_pen(self, down):
         self.fire("PEN DOWN" if down else "PEN UP")
 
-    def send_travel_speed(self, us: int):
+    def send_travel_speed(self, us):
         self.fire(f"TSPEED {us}")
-
 
 def cmd_timeout(stL, stR, step_delay_us):
     total    = max(abs(stL), abs(stR))
@@ -555,7 +507,6 @@ def cmd_timeout(stL, stR, step_delay_us):
     t = (ramp * avg_ramp * 2 + max(0, total - 2*ramp) * step_delay_us) / 1e6
     return max(5.0, t * 3.0)
 
-
 # ═══════════════════════════════════════════════════════════════
 #  APP
 # ═══════════════════════════════════════════════════════════════
@@ -563,10 +514,9 @@ def cmd_timeout(stL, stR, step_delay_us):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Diff Drive Plotter  v5")
+        self.title("Diff Drive Plotter  Potrace+GRBL")
         self.configure(bg=BG)
         self.minsize(1150, 650)
-
         self.plotter    = PlotterSerial() if HAS_DEPS else None
         self.strokes    = []
         self.all_moves  = []
@@ -575,134 +525,114 @@ class App(tk.Tk):
         self.plotting   = False
         self.stop_flag  = False
         self._tk_img    = None
-        self._trace     = []        
+        self._trace     = []
         self.robot_x    = 0.0
         self.robot_y    = 0.0
         self.robot_h    = 0.0
         self.pen_down   = False
         self._img_aspect = 1.0
-
-        # Tk vars
+        self._running   = True
+        self._tick_id   = None
         self.port_var  = tk.StringVar()
         self.baud_var  = tk.StringVar(value="115200")
         self.conn_var  = tk.StringVar(value="CONNECT")
-        self.stat_var  = tk.StringVar(value="● OFFLINE")
+        self.stat_var  = tk.StringVar(value="OFFLINE")
         self.out_w     = tk.DoubleVar(value=DEF_PAPER_W)
         self.out_h     = tk.DoubleVar(value=DEF_PAPER_H)
         self.lock_ar   = tk.BooleanVar(value=True)
         self.prog_var  = tk.DoubleVar(value=0)
         self.prog_lbl  = tk.StringVar(value="idle")
-
         self.s_thr    = tk.IntVar(value=128)
         self.s_blur   = tk.IntVar(value=1)
         self.s_min    = tk.IntVar(value=20)
         self.s_thin   = tk.IntVar(value=256)
-        self.s_auto   = tk.BooleanVar(value=True)   # AUTO pipeline toggle
-        self.s_erode  = tk.IntVar(value=0)           # pre-erosion passes
-        self.s_zs     = tk.IntVar(value=40)          # Zhang-Suen iteration limit
-        self.s_prune  = tk.IntVar(value=6)           # branch prune length
+        self.s_auto   = tk.BooleanVar(value=True)
+        self.s_erode  = tk.IntVar(value=0)
+        self.s_zs     = tk.IntVar(value=40)
+        self.s_prune  = tk.IntVar(value=6)
         self.s_step   = tk.IntVar(value=10)
         self.s_travel = tk.IntVar(value=50)
-
-        # Robot geometry — text entry vars (replacing sliders)
         self.e_wheel      = tk.StringVar(value=str(int(DEF_WHEEL_MM)))
         self.e_axle       = tk.StringVar(value=str(int(DEF_AXLE_MM)))
         self.e_speed      = tk.StringVar(value=str(DEF_DRAW_US))
         self.e_tspeed     = tk.StringVar(value=str(DEF_TRAVEL_US))
         self.e_park       = tk.StringVar(value=str(int(DEF_PARK_MM)))
-
-        # Servo config
         self.e_servo_pin  = tk.StringVar(value=str(DEF_SERVO_PIN))
         self.e_pen_down   = tk.StringVar(value=str(DEF_PEN_DOWN))
         self.e_pen_up     = tk.StringVar(value=str(DEF_PEN_UP))
-
-        # Keep s_speed as IntVar for compatibility with existing speed send calls
         self.s_speed  = tk.IntVar(value=DEF_DRAW_US)
-        
-        # Mirror
         self.s_mirror = tk.BooleanVar(value=True)
-
         self._build()
         self.bind("<F11>", self._toggle_fs)
-        self.after(300, self._refresh_ports)
-        self.after(80, self._tick)
-
+        self._tick_id = self.after(300, self._refresh_ports)
+        self._tick_id = self.after(80, self._tick)
         if not HAS_DEPS:
             self.after(600, self._dep_warn)
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _on_close(self):
+        self._running = False
+        self.stop_flag = True
+        if self.plotter and self.plotter.is_open():
+            self.plotter.fire("STOP")
+            self.plotter.disconnect()
+        if self._tick_id:
+            self.after_cancel(self._tick_id)
+        self.destroy()
 
     def _build(self):
-        # ── TOP BAR (always visible) ──────────────────────────────────
         top = tk.Frame(self, bg=CARD2, pady=6)
         top.pack(fill="x", side="top")
-
-        tk.Label(top, text="DIFF PLOTTER v5", bg=CARD2, fg=ACC,
+        tk.Label(top, text="DIFF PLOTTER  Potrace+GRBL", bg=CARD2, fg=ACC,
                  font=FONT_XL, padx=14).pack(side="left")
-
         for txt, cmd, fg in [
-            ("⚙ GENERATE",  self._generate,   ACC2),
-            ("▷ DEMO",      self._demo_run,   "#6366f1"),
-            ("▶ START",     self._plot,        GREEN),
-            ("⛔ STOP",      self._stop,        RED),
-            ("⌂ HOME",      self._home,        DIM),
+            ("GENERATE",  self._generate,   ACC2),
+            ("DEMO",      self._demo_run,   "#6366f1"),
+            ("START",     self._plot,        GREEN),
+            ("STOP",      self._stop,        RED),
+            ("HOME",      self._home,        DIM),
         ]:
             tk.Button(top, text=txt, command=cmd, bg=CARD, fg=fg,
                       font=FONT_L, bd=0, padx=10, pady=4,
                       cursor="hand2", activebackground=BG, activeforeground=fg
                       ).pack(side="left", padx=3)
-
         conn_fr = tk.Frame(top, bg=CARD2)
         conn_fr.pack(side="right", padx=10)
-
         self._port_cb = ttk.Combobox(conn_fr, textvariable=self.port_var,
-                                     width=8, font=FONT_M, state="readonly")
+                                     width=12, font=FONT_M, state="readonly")
         self._port_cb.pack(side="left", padx=2)
-
-        tk.Button(conn_fr, text="⟳", bg=CARD2, fg=ACC2, bd=0,
+        tk.Button(conn_fr, text="REFRESH", bg=CARD2, fg=ACC2, bd=0,
                   font=FONT_M, cursor="hand2", command=self._refresh_ports).pack(side="left")
-
         ttk.Combobox(conn_fr, textvariable=self.baud_var, width=7,
                      values=["9600","57600","115200"],
                      font=FONT_M, state="readonly").pack(side="left", padx=2)
-
-        tk.Button(conn_fr, textvariable=self.conn_var, command=self._toggle_conn, 
+        tk.Button(conn_fr, textvariable=self.conn_var, command=self._toggle_conn,
                   bg=CARD, fg=ACC3, font=FONT_L, bd=0, padx=8, pady=4,
                   cursor="hand2").pack(side="left", padx=4)
-
         self._stat_lbl = tk.Label(conn_fr, textvariable=self.stat_var,
                                    bg=CARD2, fg=RED, font=FONT_M_B)
         self._stat_lbl.pack(side="left", padx=4)
-
-        # ── PROGRESS BAR ───────────────────────────────────────────────
         pf = tk.Frame(self, bg=CARD2)
         pf.pack(fill="x", side="top")
         ttk.Progressbar(pf, variable=self.prog_var, maximum=100,
                         length=600).pack(side="left", fill="x", expand=True, padx=8, pady=2)
         tk.Label(pf, textvariable=self.prog_lbl, bg=CARD2, fg=DIM, font=FONT_S).pack(side="left", padx=4)
-
-        # ── MAIN AREA ─────────────────────────────────────────────────
         main = tk.Frame(self, bg=BG)
         main.pack(fill="both", expand=True)
         main.columnconfigure(1, weight=1)
         main.columnconfigure(2, weight=1)
         main.rowconfigure(0, weight=1)
-
-        # Scrollable Left Panel
         lf_container = tk.Frame(main, bg=CARD, width=320)
         lf_container.grid(row=0, column=0, sticky="nsew", padx=(6,3), pady=6)
         lf_container.grid_propagate(False)
-
         self.lf_canvas = tk.Canvas(lf_container, bg=CARD, highlightthickness=0)
         self.lf_scroll = ttk.Scrollbar(lf_container, orient="vertical", command=self.lf_canvas.yview)
         self.lf = tk.Frame(self.lf_canvas, bg=CARD)
-
         self.lf.bind("<Configure>", lambda e: self.lf_canvas.configure(scrollregion=self.lf_canvas.bbox("all")))
         self.lf_canvas.create_window((0, 0), window=self.lf, anchor="nw", width=300)
         self.lf_canvas.configure(yscrollcommand=self.lf_scroll.set)
-
         self.lf_canvas.pack(side="left", fill="both", expand=True)
         self.lf_scroll.pack(side="right", fill="y")
-
-        # Mousewheel binding
         def _on_mousewheel(event):
             if event.num == 4:
                 self.lf_canvas.yview_scroll(-1, "units")
@@ -710,24 +640,16 @@ class App(tk.Tk):
                 self.lf_canvas.yview_scroll(1, "units")
             else:
                 self.lf_canvas.yview_scroll(int(-1*(event.delta/120)), "units")
-        
         self.bind_all("<MouseWheel>", _on_mousewheel)
         self.bind_all("<Button-4>", _on_mousewheel)
         self.bind_all("<Button-5>", _on_mousewheel)
-
         self._build_left(self.lf)
-
-        # Centre
         cf = tk.Frame(main, bg=CARD)
         cf.grid(row=0, column=1, sticky="nsew", padx=3, pady=6)
         self._build_centre(cf)
-
-        # Right
         rf = tk.Frame(main, bg=CARD)
         rf.grid(row=0, column=2, sticky="nsew", padx=(3,6), pady=6)
         self._build_right(rf)
-
-        # ── LOG ───────────────────────────────────────────────────────
         lf2 = tk.Frame(self, bg=CARD2)
         lf2.pack(fill="x", side="bottom")
         tk.Label(lf2, text="LOG", bg=CARD2, fg=DIM, font=FONT_S_B, pady=2, padx=8).pack(anchor="w")
@@ -738,7 +660,6 @@ class App(tk.Tk):
         def sec(t):
             tk.Label(p, text=t, bg=CARD, fg=ACC, font=FONT_M_B,
                      anchor="w", pady=4).pack(fill="x", padx=8)
-
         def sldr(lbl, var, lo, hi, fmt=None, res=1.0, widgets_ref=None):
             row = tk.Frame(p, bg=CARD); row.pack(fill="x", padx=8)
             disp = tk.StringVar()
@@ -761,9 +682,7 @@ class App(tk.Tk):
             if widgets_ref is not None:
                 widgets_ref.extend([lw, dw, sc])
             return sc
-
         def entry_row(lbl, var, unit="", step=1.0):
-            """Text entry with mousewheel scroll-to-tune."""
             row = tk.Frame(p, bg=CARD); row.pack(fill="x", padx=8, pady=2)
             tk.Label(row, text=lbl, bg=CARD, fg=DIM, font=FONT_S,
                      width=16, anchor="w").pack(side="left")
@@ -773,7 +692,6 @@ class App(tk.Tk):
             if unit:
                 tk.Label(row, text=unit, bg=CARD, fg=DIM,
                          font=FONT_S).pack(side="left")
-            # Scroll to tune
             def _scroll(event, _var=var, _step=step):
                 try:
                     delta = -1 if (event.delta > 0 or event.num == 4) else 1
@@ -784,20 +702,16 @@ class App(tk.Tk):
             e.bind("<MouseWheel>", _scroll)
             e.bind("<Button-4>",   _scroll)
             e.bind("<Button-5>",   _scroll)
-
-        # ── 01 IMAGE ──────────────────────────────────────────────────
         sec("01  IMAGE")
-        tk.Button(p, text="⬆ UPLOAD IMAGE", command=self._upload,
+        tk.Button(p, text="UPLOAD IMAGE", command=self._upload,
                   bg=CARD2, fg=ACC, font=FONT_M_B, bd=0,
                   cursor="hand2", pady=5).pack(fill="x", padx=8, pady=(0,2))
         self.lbl_file = tk.Label(p, text="no file", bg=CARD, fg=DIM,
                                   font=FONT_S, wraplength=200)
         self.lbl_file.pack(anchor="w", padx=8)
-
-        # AUTO toggle
         auto_row = tk.Frame(p, bg=CARD2, pady=3)
         auto_row.pack(fill="x", padx=8, pady=(4,0))
-        tk.Checkbutton(auto_row, text="⚡ AUTO  (CLAHE + Otsu)",
+        tk.Checkbutton(auto_row, text="AUTO  (CLAHE + Otsu)",
                        variable=self.s_auto, bg=CARD2, fg=ACC,
                        activebackground=CARD2, selectcolor=CARD,
                        font=FONT_M_B, command=self._on_auto_toggle
@@ -805,31 +719,20 @@ class App(tk.Tk):
         self.lbl_otsu = tk.Label(auto_row, text="", bg=CARD2,
                                   fg=DIM, font=FONT_XS)
         self.lbl_otsu.pack(side="right", padx=4)
-
-        # Manual overrides (grayed when AUTO is on)
         self._manual_widgets = []
         sldr("Threshold",   self.s_thr,  50, 250, widgets_ref=self._manual_widgets)
         sldr("Blur",        self.s_blur,  0,   5,  widgets_ref=self._manual_widgets)
-
-        # Always-visible image params
         sldr("Min stroke",  self.s_min,   5, 100)
         sldr("Thinning px", self.s_thin, 50, 400)
-
-        # Skeleton sub-group
-        tk.Label(p, text="— skeleton —", bg=CARD, fg=DIM,
+        tk.Label(p, text="-- skeleton --", bg=CARD, fg=DIM,
                  font=FONT_XS, anchor="w").pack(fill="x", padx=12, pady=(4,0))
         sldr("Pre-erode",  self.s_erode, 0,  8,
              fmt=lambda v: f"{v}px" if v else "off")
         sldr("ZS passes",  self.s_zs,    1, 40, fmt=lambda v: str(v))
         sldr("Prune",      self.s_prune, 0, 20,
              fmt=lambda v: f"{v}px" if v else "off")
-
         tk.Frame(p, bg=CARD2, height=1).pack(fill="x", padx=8, pady=4)
-
-        # Apply initial state
         self._on_auto_toggle()
-
-        # ── 02 OUTPUT SIZE ─────────────────────────────────────────────
         sec("02  OUTPUT SIZE (mm)")
         for lbl, var in [("W", self.out_w), ("H", self.out_h)]:
             row = tk.Frame(p, bg=CARD); row.pack(fill="x", padx=8, pady=1)
@@ -851,10 +754,8 @@ class App(tk.Tk):
                       bg=CARD2, fg=DIM, font=FONT_XS, bd=0,
                       cursor="hand2", padx=2, pady=2).pack(side="left", padx=1)
         tk.Frame(p, bg=CARD2, height=1).pack(fill="x", padx=8, pady=4)
-
-        # ── 03 PATH ────────────────────────────────────────────────────
         sec("03  PATH")
-        sldr("Draw step (×0.1)", self.s_step,   5,  30,
+        sldr("Draw step (x0.1)", self.s_step,   5,  30,
              fmt=lambda v: f"{v/10:.1f}mm")
         sldr("Travel step",      self.s_travel, 10, 100,
              fmt=lambda v: f"{v/10:.1f}mm")
@@ -864,35 +765,29 @@ class App(tk.Tk):
                        font=FONT_S, command=self._do_plan
                        ).pack(anchor="w", padx=8, pady=2)
         tk.Frame(p, bg=CARD2, height=1).pack(fill="x", padx=8, pady=4)
-
-        # ── 04 ROBOT GEOMETRY ─────────────────────────────────────────
         sec("04  ROBOT GEOMETRY")
         entry_row("Wheel dia",    self.e_wheel,  "mm", step=1.0)
         entry_row("Axle width",   self.e_axle,   "mm", step=1.0)
-        entry_row("Draw speed",   self.e_speed,  "µs", step=10.0)
-        entry_row("Travel speed", self.e_tspeed, "µs", step=10.0)
+        entry_row("Draw speed",   self.e_speed,  "us", step=10.0)
+        entry_row("Travel speed", self.e_tspeed, "us", step=10.0)
         entry_row("Park offset",  self.e_park,   "mm", step=5.0)
-        tk.Button(p, text="⟳ UPDATE PARAMS", command=self._update_params,
+        tk.Button(p, text="UPDATE PARAMS", command=self._update_params,
                   bg=CARD2, fg=ACC3, font=FONT_M_B, bd=0,
                   cursor="hand2", pady=5).pack(fill="x", padx=8, pady=4)
         tk.Frame(p, bg=CARD2, height=1).pack(fill="x", padx=8, pady=2)
-
-        # ── 05 SERVO / PEN ────────────────────────────────────────────
         sec("05  SERVO / PEN")
         entry_row("Servo pin",   self.e_servo_pin, "",  step=1.0)
-        entry_row("Pen-down °",  self.e_pen_down,  "°", step=5.0)
-        entry_row("Pen-up °",    self.e_pen_up,    "°", step=5.0)
+        entry_row("Pen-down deg",  self.e_pen_down,  "deg", step=5.0)
+        entry_row("Pen-up deg",    self.e_pen_up,    "deg", step=5.0)
         tk.Button(p, text="SEND SERVO CFG", command=self._send_servo_cfg,
                   bg=CARD2, fg=ACC3, font=FONT_M_B, bd=0,
                   cursor="hand2", pady=4).pack(fill="x", padx=8, pady=4)
         tk.Frame(p, bg=CARD2, height=1).pack(fill="x", padx=8, pady=2)
-
         self.lbl_stat = tk.Label(p, text="", bg=CARD, fg=DIM,
                                   font=FONT_S, justify="left")
         self.lbl_stat.pack(anchor="w", padx=8, pady=2)
 
     def _on_auto_toggle(self):
-        """Gray-out manual threshold/blur when AUTO is active."""
         state = "disabled" if self.s_auto.get() else "normal"
         fg    = CARD2 if self.s_auto.get() else DIM
         for w in self._manual_widgets:
@@ -919,7 +814,6 @@ class App(tk.Tk):
         self.live_cv = tk.Canvas(p, bg="#e8e6e0", bd=0, highlightthickness=0)
         self.live_cv.grid(row=1, column=0, sticky="nsew", padx=6, pady=(0, 6))
 
-    # ── HELPERS ────────────────────────────────────────────────────────
     def _log(self, msg, color=ACC3):
         self.log_txt.configure(state="normal")
         self.log_txt.insert("end", f"[{time.strftime('%H:%M:%S')}] {msg}\n")
@@ -935,11 +829,14 @@ class App(tk.Tk):
         self.attributes("-fullscreen", fs)
 
     def _refresh_ports(self):
-        if not HAS_DEPS: return
+        if not HAS_DEPS or not self._running:
+            return
         ports = self.plotter.ports()
         self._port_cb["values"] = ports
         if ports and not self.port_var.get():
             self.port_var.set(ports[0])
+        if self._running:
+            self._tick_id = self.after(2000, self._refresh_ports)
 
     def _set_size(self, w, h):
         self.out_w.set(float(w))
@@ -959,7 +856,7 @@ class App(tk.Tk):
             return
         update_geometry(wheel, axle)
         self.s_speed.set(speed)
-        self._log(f"⟳ Wheel={WHEEL_MM}mm Axle={AXLE_MM}mm SPmm={STEPS_PER_MM:.2f} Draw={speed}µs Travel={tspeed}µs")
+        self._log(f"Wheel={WHEEL_MM}mm Axle={AXLE_MM}mm SPmm={STEPS_PER_MM:.2f} Draw={speed}us Travel={tspeed}us")
         if self.plotter and self.plotter.is_open():
             self.plotter.fire(f"SPEED {speed}")
             self.plotter.send_travel_speed(tspeed)
@@ -982,13 +879,12 @@ class App(tk.Tk):
         self.plotter.fire(cmd)
         self._log(f"Sent: {cmd}")
 
-    # ── CONNECTION ─────────────────────────────────────────────────────
     def _toggle_conn(self):
         if not HAS_DEPS: self._dep_warn(); return
         if self.plotter.is_open():
             self.plotter.disconnect()
             self.conn_var.set("CONNECT")
-            self.stat_var.set("● OFFLINE")
+            self.stat_var.set("OFFLINE")
             self._stat_lbl.configure(fg=RED)
             self._log("Disconnected")
             return
@@ -999,11 +895,11 @@ class App(tk.Tk):
         try:
             self.plotter.connect(port, int(self.baud_var.get()))
             self.conn_var.set("DISCONNECT")
-            self.stat_var.set(f"● {port}")
+            self.stat_var.set(f"ONLINE {port}")
             self._stat_lbl.configure(fg=GREEN)
             self._log(f"Connected {port} @ {self.baud_var.get()}")
             if self.plotter.ping():
-                self._log("✓ PING OK")
+                self._log("PING OK")
                 self.plotter.fire(f"SPEED {self.s_speed.get()}")
                 try:
                     self.plotter.send_travel_speed(int(self.e_tspeed.get()))
@@ -1014,12 +910,11 @@ class App(tk.Tk):
                 except Exception:
                     pass
             else:
-                self._log("⚠ No PING — wrong firmware?", AMBER)
+                self._log("No PING - wrong firmware?", AMBER)
         except Exception as e:
             messagebox.showerror("Connect failed", str(e))
             self._log(f"ERROR: {e}", RED)
 
-    # ── IMAGE / GENERATE ───────────────────────────────────────────────
     def _upload(self):
         path = filedialog.askopenfilename(
             title="Select image",
@@ -1042,7 +937,7 @@ class App(tk.Tk):
             messagebox.showwarning("No image", "Upload an image first.")
             return
         if self.plotting: return
-        self._prog("Converting…", 5)
+        self._prog("Converting...", 5)
         threading.Thread(target=self._gen_thread, daemon=True).start()
 
     def _gen_thread(self):
@@ -1062,7 +957,6 @@ class App(tk.Tk):
                 erode_iters = self.s_erode.get(),
                 prune_len   = self.s_prune.get(),
                 progress_cb = lambda m, p: self.after(0, self._prog, m, p))
-            # Update Otsu label on main thread
             self.strokes = strokes
             self.after(0, self._do_plan)
         except Exception as e:
@@ -1077,23 +971,19 @@ class App(tk.Tk):
             update_geometry(float(self.e_wheel.get()), float(self.e_axle.get()))
         except ValueError:
             pass
-
         strokes_to_plan = self.strokes
         if self.s_mirror.get():
             strokes_to_plan = [[(x, -y) for x, y in s] for s in self.strokes]
-
         try:
             park_mm = max(5.0, float(self.e_park.get()))
         except ValueError:
             park_mm = DEF_PARK_MM
-
         self.all_moves = plan_moves(strokes_to_plan, step_mm, travel_mm, park_mm)
         self.sim_pts   = simulate_moves(self.all_moves, park_mm)
-
         nd = sum(1 for m in self.all_moves if m[3])
         self.lbl_stat.configure(text=f"Strokes: {len(self.strokes)}\n"
                                      f"Moves: {len(self.all_moves)} ({nd} draw)")
-        self._log(f"✓ {len(self.strokes)} strokes, {len(self.all_moves)} moves")
+        self._log(f"{len(self.strokes)} strokes, {len(self.all_moves)} moves")
         self._redraw_preview()
 
     def _redraw_preview(self):
@@ -1108,12 +998,10 @@ class App(tk.Tk):
             park_mm = max(5.0, float(self.e_park.get()))
         except Exception:
             park_mm = DEF_PARK_MM
-
         asp = pw / ph if ph > 0 else 1.0
         if cw / ch > asp: rh, rw = ch, int(ch * asp)
         else:             rw, rh = cw, int(cw / asp)
         rw, rh = max(rw, 10), max(rh, 10)
-
         threading.Thread(target=self._render_thread,
                          args=(rw, rh, pw, ph, park_mm), daemon=True).start()
 
@@ -1127,17 +1015,17 @@ class App(tk.Tk):
         self.prev_cv.delete("all")
         self.prev_cv.create_image(0, 0, anchor="nw", image=img)
 
-    # ── LIVE ROBOT VIEW ────────────────────────────────────────────────
     def _tick(self):
+        if not self._running:
+            return
         self._draw_live()
-        self.after(50, self._tick)
+        self._tick_id = self.after(50, self._tick)
 
     def _draw_live(self):
         c = self.live_cv
         c.delete("all")
         cw, ch = c.winfo_width(), c.winfo_height()
         if cw < 20 or ch < 20: return
-
         try:
             pw, ph = float(self.out_w.get()), float(self.out_h.get())
         except Exception:
@@ -1146,7 +1034,6 @@ class App(tk.Tk):
             park_mm = max(5.0, float(self.e_park.get()))
         except Exception:
             park_mm = DEF_PARK_MM
-
         all_x = [self.robot_x] + [x for x, y in self._trace]
         all_y = [self.robot_y] + [y for x, y in self._trace]
         vx_min = min(0.0,       min(all_x) - 5)
@@ -1155,37 +1042,26 @@ class App(tk.Tk):
         vy_max = max(ph,        max(all_y) + 5)
         view_w = vx_max - vx_min
         view_h = vy_max - vy_min
-
         ml, mr, mt, mb = 36, 8, 8, 24
         aw = cw - ml - mr
         ah = ch - mt - mb
         if aw < 10 or ah < 10: return
-
         sc  = min(aw / view_w, ah / view_h)
-        # Screen origin: robot (0,0) maps here
         ox  = ml - vx_min * sc
-        oy  = mt + vy_max * sc   # Y flipped: larger y_robot → higher on screen
-
+        oy  = mt + vy_max * sc
         def to_sx(xr): return ox + xr * sc
         def to_sy(yr): return oy - yr * sc
-
         c.create_rectangle(0, 0, cw, ch, fill="#dde8dc", outline="")
-
-        # Park zone
         pkx0, pky0 = to_sx(0),  to_sy(0)
         pkx1, pky1 = to_sx(pw), to_sy(-park_mm)
         c.create_rectangle(pkx0, pky0, pkx1, pky1,
                             fill="#e8f0e8", outline="#aaccaa", width=1, dash=(3,3))
         c.create_text((pkx0+pkx1)//2, (pky0+pky1)//2,
                       text="PARK", fill="#aaccaa", font=FONT_XS)
-
-        # Paper
         px0, py0 = to_sx(0),  to_sy(ph)
         px1, py1 = to_sx(pw), to_sy(0)
         c.create_rectangle(px0, py0, px1, py1,
                             fill="#f0eeea", outline="#9aaa90", width=1)
-
-        # Grid
         grid = 25 if pw <= 200 else 50
         for xm in range(0, int(pw)+1, grid):
             gx = to_sx(xm)
@@ -1196,16 +1072,12 @@ class App(tk.Tk):
             c.create_line(px0, gy, px1, gy, fill="#ccdcc8", width=1)
             if ym > 0: c.create_text(px0-4, gy, text=str(ym),
                                      fill=DIM, font=FONT_S, anchor="e")
-
-        # Trace
         if len(self._trace) >= 2:
             flat = []
             for tx, ty in self._trace:
                 flat.extend([to_sx(tx), to_sy(ty)])
             if len(flat) >= 4:
                 c.create_line(flat, fill=ACC, width=1)
-
-        # Robot icon
         rx, ry = to_sx(self.robot_x), to_sy(self.robot_y)
         hw = 12
         bc = "#2d3748" if not self.pen_down else "#7c2d12"
@@ -1220,8 +1092,8 @@ class App(tk.Tk):
                       fill=AMBER, width=2, arrow="last")
         c.create_text(cw//2, ch-10,
                       text=(f"X:{self.robot_x:.1f}  Y:{self.robot_y:.1f}"
-                            f"  H:{self.robot_h:.1f}°"
-                            f"  {'● DRAW' if self.pen_down else '○ TRAVEL'}"),
+                            f"  H:{self.robot_h:.1f}deg"
+                            f"  {'DRAW' if self.pen_down else 'TRAVEL'}"),
                       fill=ACC3 if self.pen_down else DIM, font=FONT_S_B)
 
     def _set_robot(self, x, y, h, pen):
@@ -1232,7 +1104,6 @@ class App(tk.Tk):
         if pen:
             self._trace.append((x, y))
 
-    # ── DEMO ──────────────────────────────────────────────────────────
     def _demo_run(self):
         if not HAS_DEPS: self._dep_warn(); return
         if not self.all_moves:
@@ -1274,9 +1145,8 @@ class App(tk.Tk):
             time.sleep(max(0.01, min(t, 0.08)))
         self.plotting = False
         self.after(0, self._prog,
-                   "Demo done ✓" if not self.stop_flag else "Stopped", 100)
+                   "Demo done" if not self.stop_flag else "Stopped", 100)
 
-    # ── PLOT ──────────────────────────────────────────────────────────
     def _plot(self):
         if not HAS_DEPS: self._dep_warn(); return
         if not self.all_moves:
@@ -1314,26 +1184,21 @@ class App(tk.Tk):
             tspd = int(self.e_tspeed.get())
         except Exception:
             tspd = DEF_TRAVEL_US
-
-        # Send speeds ONCE upfront — firmware picks draw vs travel by pen state.
-        # Never fire SPEED per-move; it races with wait_ok and corrupts the buffer.
         self.plotter.fire(f"SPEED {spd}")
         time.sleep(0.05)
         self.plotter.fire(f"TSPEED {tspd}")
         time.sleep(0.05)
         if self.plotter.is_open():
             self.plotter.ser.reset_input_buffer()
-        self.after(0, self._log, f"▶ {total} moves  draw={spd}µs travel={tspd}µs")
-
+        self.after(0, self._log, f"START {total} moves  draw={spd}us travel={tspd}us")
+        cur_x, cur_y = 0.0, -park_mm
         for i, move in enumerate(self.all_moves):
             if self.stop_flag: break
             stL, stR, lbl, is_draw, pen_change = \
                 move[0], move[1], move[2], move[3], move[4]
-
             if pen_change is not None:
                 self.plotter.send_pen(pen_change)
                 time.sleep(0.12)
-
             tmo = cmd_timeout(stL, stR, spd if is_draw else tspd)
             try:
                 self.plotter.send_steps(stL, stR, timeout=tmo,
@@ -1348,39 +1213,37 @@ class App(tk.Tk):
             except InterruptedError:
                 break
             except IOError as e:
-                self.after(0, self._log, f"✖ Disconnected: {e}", RED); break
+                self.after(0, self._log, f"Disconnected: {e}", RED); break
             except TimeoutError as e:
-                self.after(0, self._log, f"⏱ TIMEOUT move {i+1}: {e}", RED)
+                self.after(0, self._log, f"TIMEOUT move {i+1}: {e}", RED)
                 errs += 1
                 if errs >= 3:
                     self.after(0, messagebox.showerror, "3 Timeouts",
                                "Arduino not responding.\nCheck 12V + Vref.")
                     break
             except RuntimeError as e:
-                self.after(0, self._log, f"✖ Arduino ERR: {e}", RED)
+                self.after(0, self._log, f"Arduino ERR: {e}", RED)
                 self.after(0, messagebox.showerror, "Arduino Error", str(e))
                 break
             except Exception as e:
-                self.after(0, self._log, f"✖ {e}", RED); break
+                self.after(0, self._log, f"Error: {e}", RED); break
             else:
                 time.sleep(INTER_CMD_S)
-
         if self.plotter and self.plotter.is_open():
             self.plotter.send_pen(False)
         self.plotting = False
-        msg = "Done ✓" if not self.stop_flag else "Stopped"
+        msg = "Done" if not self.stop_flag else "Stopped"
         self.after(0, self._prog, msg, 100)
         if not self.stop_flag:
-            self.after(0, self._log, "✓ Plot complete!")
+            self.after(0, self._log, "Plot complete!")
 
-    # ── STOP / HOME ────────────────────────────────────────────────────
     def _stop(self):
         self.stop_flag = True
         self.plotting  = False
         if self.plotter and self.plotter.is_open():
             self.plotter.fire("STOP")
         self._set_robot(self.robot_x, self.robot_y, self.robot_h, False)
-        self._log("■ STOP", RED)
+        self._log("STOP", RED)
 
     def _home(self):
         self._trace.clear()
@@ -1391,10 +1254,12 @@ class App(tk.Tk):
         self._set_robot(0, -park_mm, 0, False)
         if self.plotter and self.plotter.is_open():
             self.plotter.fire("STOP")
-        self._log("⌂ HOME reset")
+        self._log("HOME reset")
 
     def _dep_warn(self):
-        messagebox.showwarning("Missing packages", "pip install opencv-python Pillow pyserial numpy")
+        messagebox.showwarning("Missing packages",
+            "pip install opencv-python Pillow pyserial numpy svgelements\n"
+            "sudo apt install python3-pil.imagetk potrace")
 
 if __name__ == "__main__":
     App().mainloop()

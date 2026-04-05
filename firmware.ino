@@ -235,22 +235,47 @@ void loop() {
   // Nothing — all work in serialEvent + executeSteps
 }
 
-// ── Command handler ────────────────────────────────────────────────────
+// ── Position tracking ────────────────────────────────────────────────
+float currentX = 0.0, currentY = 0.0;
+float stp_per_mm = 5.0; // Placeholder, must match Python's STEPS_PER_MM
+
+// ── Kinematics helper ────────────────────────────────────────────────
+void moveTo(float targetX, float targetY) {
+  float dx = targetX - currentX;
+  float dy = targetY - currentY;
+  // This is a simplified kinematics for differential drive.
+  // Full GRBL requires a proper inverse kinematics model.
+  // For now, let's just convert coordinate change to crude step counts
+  // stL = ..., stR = ...
+  long stL = (long)((dy - dx) * stp_per_mm);
+  long stR = (long)((dy + dx) * stp_per_mm);
+  executeSteps(stL, stR);
+  currentX = targetX;
+  currentY = targetY;
+}
+
+// ── Command handler (updated for G-code) ────────────────────────────
 void handleCmd(String cmd) {
   cmd.trim();
   String cu = cmd; cu.toUpperCase();
   stopFlag = false;
 
-  // ── STEPS ──────────────────────────────────────────────────────────
-  if (cu.startsWith("STEPS")) {
-    int li = cu.indexOf(F("L:"));
-    int ri = cu.indexOf(F("R:"));
-    if (li < 0 || ri < 0) {
-      Serial.println(F("ERR STEPS format: STEPS L:<n> R:<n>")); return;
+  // ── G-code (G0/G1) ──────────────────────────────────────────────────
+  if (cu.startsWith("G0") || cu.startsWith("G1")) {
+    bool isG1 = cu.startsWith("G1");
+    int xi = cu.indexOf('X');
+    int yi = cu.indexOf('Y');
+    int fi = cu.indexOf('F');
+    if (xi < 0 || yi < 0) {
+      Serial.println(F("ERR G-code needs X and Y")); return;
     }
-    long stL = cu.substring(li + 2).toInt();
-    long stR = cu.substring(ri + 2).toInt();
-    executeSteps(stL, stR);
+    float tx = cu.substring(xi + 1).toFloat();
+    float ty = cu.substring(yi + 1).toFloat();
+    if (isG1 && fi > 0) {
+      stepDelay = cu.substring(fi + 1).toInt();
+    }
+    moveTo(tx, ty);
+    Serial.println(F("OK"));
   }
 
   // ── PEN ────────────────────────────────────────────────────────────
