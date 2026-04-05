@@ -1,0 +1,17 @@
+# Python dependencies for Diff Drive Plotter with Potrace vectorization
+
+# Core image processing
+opencv-python
+Pillow
+
+# Serial communication
+pyserial
+
+# Numerical operations
+numpy
+
+# SVG parsing for Potrace output
+svgelements
+
+# Optional: for additional midline algorithms
+# scikit-image

@@ -21,13 +21,14 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import threading, time, os, math
 
-try:
-    import cv2, numpy as np
-    from PIL import Image, ImageTk, ImageDraw
-    import serial, serial.tools.list_ports
-    HAS_DEPS = True
-except ImportError as e:
-    HAS_DEPS = False
+import cv2
+import numpy as np
+from PIL import Image, ImageTk, ImageDraw
+import serial, serial.tools.list_ports
+import subprocess, tempfile, os
+from pathlib import Path
+from svgelements import SVG, Path, Move, Line, Close, CubicBezier
+HAS_DEPS = True
 
 try:
     from skimage.morphology import skeletonize, medial_axis
@@ -216,22 +217,156 @@ def segment_by_curvature(contour, curvature_threshold=0.05):
     return segments
 
 # ═══════════════════════════════════════════════════════════════
-#  MIDLINE DETECTION — GRADIENT RIDGE FOLLOW
+#  VECTORIZATION — POTRACE (Phase 1)
 # ═══════════════════════════════════════════════════════════════
-def extract_midline_gradient_ridge(blob_mask):
+def vectorize_with_potrace(binary_image):
     """
-    Distance transform → gradient ridge following.
+    Convert binary image to vector strokes using Potrace.
     
     Steps:
-      1. Distance transform (pixel = distance to nearest edge)
-      2. Compute gradient of distance field
-      3. Ridge: where gradient magnitude is low (plateau at center)
-      4. Thin to skeleton
+      1. Export binary image to PBM format
+      2. Call potrace binary to generate SVG
+      3. Parse SVG paths using svgelements
+      4. Discretize bezier curves to polylines
+      5. Transform coordinates to plotter space
     
-    Returns: 1-pixel skeleton along centerline
+    Returns: list of strokes [(x,y), ...]
+    """
+    if binary_image is None or binary_image.size == 0:
+        return []
+    
+    # Ensure binary 0/255 image
+    if binary_image.dtype != np.uint8:
+        binary_image = (binary_image > 127).astype(np.uint8) * 255
+    
+    # Get image dimensions
+    h, w = binary_image.shape
+    
+    # Create temporary files
+    with tempfile.NamedTemporaryFile(suffix='.pbm', delete=False) as pbm_file, \
+         tempfile.NamedTemporaryFile(suffix='.svg', delete=False) as svg_file:
+        
+        pbm_path = pbm_file.name
+        svg_path = svg_file.name
+        
+        # Write PBM format (Portable BitMap)
+        # PBM header: P4 <width> <height>
+        with open(pbm_path, 'wb') as f:
+            f.write(f"P4\n{w} {h}\n".encode())
+            # Write binary data (1 bit per pixel, packed)
+            # Invert: Potrace expects black on white, OpenCV has white on black
+            inverted = 255 - binary_image
+            packed = np.packbits(inverted.reshape(-1, 8)[:, ::-1])
+            f.write(packed.tobytes())
+        
+        # Call potrace
+        try:
+            # Use --longcurve for better curve approximation, --turdsize to ignore small specs
+            result = subprocess.run(
+                ['potrace', pbm_path, '--svg', '--output', svg_path, 
+                 '--turdsize', '2', '--alphamax', '1.0', '--longcurve'],
+                capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode != 0:
+                print(f"Potrace error: {result.stderr}")
+                return []
+                
+        except (subprocess.TimeoutExpired, FileNotFoundError) as e:
+            print(f"Potrace not available or failed: {e}")
+            # Fallback to original midline extraction
+            return extract_midline_gradient_ridge_fallback(binary_image)
+        
+        # Parse SVG
+        try:
+            from svgelements import SVG, Path, Move, Line, Close, CubicBezier
+            
+            with open(svg_path, 'r') as f:
+                svg_content = f.read()
+            
+            svg = SVG.parse(svg_content)
+            strokes = []
+            
+            for element in svg.elements():
+                if isinstance(element, Path):
+                    # Extract points from path
+                    points = []
+                    current_point = None
+                    
+                    for segment in element:
+                        if isinstance(segment, Move):
+                            # Start new stroke if we have points
+                            if points and len(points) > 1:
+                                strokes.append(points)
+                                points = []
+                            current_point = (segment.end.x, segment.end.y)
+                            points.append(current_point)
+                            
+                        elif isinstance(segment, (Line, Close)):
+                            if current_point is not None:
+                                current_point = (segment.end.x, segment.end.y)
+                                points.append(current_point)
+                                
+                        elif isinstance(segment, CubicBezier):
+                            # Sample cubic bezier curve
+                            if current_point is not None:
+                                # Adaptive sampling: more points for longer curves
+                                start = current_point
+                                end = (segment.end.x, segment.end.y)
+                                length = np.hypot(end[0]-start[0], end[1]-start[1])
+                                num_samples = max(3, int(length / 5))
+                                
+                                for i in range(1, num_samples + 1):
+                                    t = i / num_samples
+                                    # Cubic bezier formula
+                                    x = (1-t)**3 * start[0] + 3*(1-t)**2*t * segment.control1.x + \
+                                        3*(1-t)*t**2 * segment.control2.x + t**3 * end[0]
+                                    y = (1-t)**3 * start[1] + 3*(1-t)**2*t * segment.control1.y + \
+                                        3*(1-t)*t**2 * segment.control2.y + t**3 * end[1]
+                                    points.append((x, y))
+                                
+                                current_point = end
+                    
+                    # Add last stroke if not empty
+                    if points and len(points) > 1:
+                        strokes.append(points)
+            
+            # Transform coordinates: Potrace uses top-left origin, Y-down
+            # Convert to center origin, Y-up for plotter
+            transformed_strokes = []
+            for stroke in strokes:
+                transformed = []
+                for x, y in stroke:
+                    # Flip Y axis: y_potrace → plotter_y = h - y_potrace
+                    # Keep X as is
+                    plotter_y = h - y
+                    transformed.append((float(x), float(plotter_y)))
+                transformed_strokes.append(transformed)
+            
+            return transformed_strokes
+            
+        except ImportError as e:
+            print(f"svgelements not available: {e}")
+            # Fallback to original midline extraction
+            return extract_midline_gradient_ridge_fallback(binary_image)
+        finally:
+            # Clean up temp files
+            try:
+                os.unlink(pbm_path)
+                os.unlink(svg_path)
+            except:
+                pass
+    
+    return []
+
+def extract_midline_gradient_ridge_fallback(blob_mask):
+    """
+    Fallback to original gradient ridge follow if Potrace fails.
+    This maintains backward compatibility.
+    Returns: list of strokes [(x,y), ...]
     """
     if blob_mask is None or blob_mask.size == 0:
-        return blob_mask
+        return []
     
     # Ensure binary
     blob_mask = (blob_mask > 127).astype(np.uint8) * 255
@@ -255,7 +390,8 @@ def extract_midline_gradient_ridge(blob_mask):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     skeleton = cv2.morphologyEx(ridge, cv2.MORPH_SKELETON, kernel, iterations=1)
     
-    return skeleton
+    # Extract strokes from skeleton
+    return extract_strokes_from_skeleton(skeleton)
 
 def extract_strokes_from_skeleton(skeleton):
     """
@@ -493,6 +629,18 @@ class SerialPlotter:
     def send_pen(self, down, timeout=1.0):
         """Send PEN and wait OK."""
         cmd = "PEN DOWN" if down else "PEN UP"
+        self.fire(cmd)
+        return self.wait_ok(timeout)
+
+    def send_g0(self, x, y, timeout=1.0):
+        """Send G0 (rapid travel) and wait OK."""
+        cmd = f"G0 X{x:.2f} Y{y:.2f}"
+        self.fire(cmd)
+        return self.wait_ok(timeout)
+
+    def send_g1(self, x, y, speed_us, timeout=1.0):
+        """Send G1 (linear feed) and wait OK."""
+        cmd = f"G1 X{x:.2f} Y{y:.2f} F{speed_us}"
         self.fire(cmd)
         return self.wait_ok(timeout)
 
@@ -758,17 +906,12 @@ class App(tk.Tk):
             _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
             self._log(f"✓ Otsu threshold applied")
             
-            # Midline extraction (GRADIENT RIDGE FOLLOW)
-            self._prog("Extracting midlines...", 30)
-            skeleton = extract_midline_gradient_ridge(binary)
-            self._log(f"✓ Gradient ridge follow midline extracted")
+            # Midline extraction (VECTORIZATION)
+            self._prog("Extracting strokes...", 30)
+            self.strokes = vectorize_with_potrace(binary)
+            self._log(f"✓ Potrace vectorization complete")
             
-            # Extract strokes
-            self._prog("Extracting strokes...", 50)
-            self.strokes = extract_strokes_from_skeleton(skeleton)
-            self._log(f"✓ Found {len(self.strokes)} strokes")
-            
-            # Visualize
+            # Visualize (Convert strokes to visual mask)
             vis = np.zeros_like(gray)
             for stroke in self.strokes:
                 pts = np.array(stroke, dtype=np.int32)
@@ -985,41 +1128,35 @@ class App(tk.Tk):
             self.plotter.ser.reset_input_buffer()
         self.after(0, self._log, f"▶ {total} moves  draw={spd}µs travel={tspd}µs")
 
+        # Track current position in mm for G-code
+        curr_x, curr_y, curr_h = 0.0, -park_mm, 0.0
+
         for i, move in enumerate(self.all_moves):
             if self.stop_flag: break
             stL, stR, lbl, is_draw, pen_change, curv = \
                 move[0], move[1], move[2], move[3], move[4], move[5]
 
+            # Calculate target position
+            new_x, new_y, new_h = pose_update(stL, stR, curr_x, curr_y, curr_h)
+
             if pen_change is not None:
                 self.plotter.send_pen(pen_change)
                 time.sleep(0.12)
 
-            tmo = cmd_timeout(stL, stR, spd if is_draw else tspd)
             try:
-                self.plotter.send_steps(stL, stR, timeout=tmo,
-                                        stop_fn=lambda: self.stop_flag)
-                x, y, h = pose_update(stL, stR, x, y, h)
-                self.after(0, self._set_robot, x, y, h, is_draw)
+                if is_draw:
+                    self.plotter.send_g1(new_x, new_y, spd, timeout=cmd_timeout(stL, stR, spd))
+                else:
+                    self.plotter.send_g0(new_x, new_y, timeout=cmd_timeout(stL, stR, tspd))
+                
+                curr_x, curr_y, curr_h = new_x, new_y, new_h
+                self.after(0, self._set_robot, curr_x, curr_y, curr_h, is_draw)
+                
                 errs = 0
                 if i % 20 == 0 or i == total-1:
                     self.after(0, self._prog,
                                f"Move {i+1}/{total}  {lbl}",
                                int((i+1)/total*100))
-            except InterruptedError:
-                break
-            except IOError as e:
-                self.after(0, self._log, f"✖ Disconnected: {e}"); break
-            except TimeoutError as e:
-                self.after(0, self._log, f"⏱ TIMEOUT move {i+1}: {e}")
-                errs += 1
-                if errs >= 3:
-                    self.after(0, messagebox.showerror, "3 Timeouts",
-                               "Arduino not responding.\nCheck 12V + Vref.")
-                    break
-            except RuntimeError as e:
-                self.after(0, self._log, f"✖ Arduino ERR: {e}")
-                self.after(0, messagebox.showerror, "Arduino Error", str(e))
-                break
             except Exception as e:
                 self.after(0, self._log, f"✖ {e}"); break
             else:
