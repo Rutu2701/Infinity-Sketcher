@@ -1,0 +1,1071 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Diff Plotter Lab v19</title>
+<style>
+:root {
+  --bg:      #f5f0eb;
+  --surface: #ede8e2;
+  --card:    #ffffff;
+  --card2:   #e8e2db;
+  --border:  rgba(100,70,30,0.15);
+  --border2: rgba(100,70,30,0.28);
+  --accent:  #b05a00;
+  --accent2: #7c3aed;
+  --accent3: #0369a1;
+  --green:   #166534;
+  --red:     #dc2626;
+  --amber:   #d97706;
+  --text:    #1f2937;
+  --muted:   #6b7280;
+  --glass:   rgba(237,232,226,0.92);
+  --glow:    0 0 14px rgba(176,90,0,0.18);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{font-family:'Courier New',monospace;background:var(--bg);color:var(--text);min-height:100vh;font-size:12px}
+
+/* ── TOP BAR ── */
+.topbar{display:flex;align-items:center;gap:0;padding:0 12px;height:48px;background:var(--glass);border-bottom:1px solid var(--border2);backdrop-filter:blur(12px);z-index:10}
+.logo{font-size:13px;letter-spacing:3px;color:var(--accent);font-weight:bold;padding-right:16px;border-right:1px solid var(--border2);margin-right:12px}
+.logo span{color:var(--accent2)}
+.topbtn{background:transparent;border:1px solid var(--border2);color:var(--muted);padding:5px 12px;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;cursor:pointer;font-family:inherit;border-radius:3px;transition:all 0.15s;margin-right:4px}
+.topbtn:hover{border-color:var(--accent);color:var(--accent);box-shadow:var(--glow)}
+.topbtn.go{border-color:var(--green);color:var(--green)}
+.topbtn.go:hover{background:rgba(22,101,52,0.08);box-shadow:0 0 14px rgba(22,101,52,0.2)}
+.topbtn.stop{border-color:var(--red);color:var(--red)}
+.topbtn.stop:hover{background:rgba(220,38,38,0.08)}
+.topbtn.primary{border-color:var(--accent);color:var(--accent)}
+.topbtn.primary:hover{background:rgba(176,90,0,0.08)}
+.spacer{flex:1}
+.conn-area{display:flex;align-items:center;gap:6px}
+.conn-dot{width:7px;height:7px;border-radius:50%;background:var(--red);flex-shrink:0;transition:background 0.3s}
+.conn-dot.on{background:var(--green);box-shadow:0 0 8px rgba(22,101,52,0.5)}
+select.port-sel{background:var(--card);border:1px solid var(--border2);color:var(--text);padding:4px 8px;border-radius:3px;font-family:inherit;font-size:11px}
+.status-pill{font-size:10px;letter-spacing:1px;color:var(--muted);padding:3px 8px;border:1px solid var(--border);border-radius:12px;background:var(--card)}
+
+/* ── MAIN LAYOUT ── */
+.shell{display:flex;flex-direction:column;height:100vh}
+
+/* ── SETTINGS PANEL (left) ── */
+.settings-panel{width:280px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);overflow-y:auto;overflow-x:hidden;padding:8px}
+.settings-panel::-webkit-scrollbar{width:3px}
+.settings-panel::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+
+.section{border:1px solid var(--border);border-radius:5px;margin-bottom:8px;overflow:hidden}
+.sec-head{background:var(--card2);padding:6px 10px;font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none;transition:background 0.15s}
+.sec-head:hover{background:rgba(176,90,0,0.08);color:var(--text)}
+.sec-head .badge{font-size:9px;background:rgba(176,90,0,0.12);color:var(--accent);padding:1px 6px;border-radius:10px;letter-spacing:0}
+.sec-body{padding:8px 10px;display:flex;flex-direction:column;gap:5px;background:var(--card)}
+.sec-body.collapsed{display:none}
+
+.row{display:flex;align-items:center;gap:6px}
+.row label{font-size:10px;color:var(--muted);min-width:80px;flex-shrink:0}
+.row input[type=range]{flex:1;height:2px;accent-color:var(--accent);cursor:pointer}
+.row select{flex:1;background:var(--bg);border:1px solid var(--border2);color:var(--text);padding:3px 6px;border-radius:3px;font-family:inherit;font-size:11px}
+.row input[type=number],.row input[type=text]{flex:1;background:var(--bg);border:1px solid var(--border2);color:var(--text);padding:3px 6px;border-radius:3px;font-family:inherit;font-size:11px}
+.row input[type=checkbox]{accent-color:var(--accent);width:13px;height:13px}
+.val{font-size:11px;color:var(--accent);min-width:30px;text-align:right}
+.info-tag{font-size:9px;color:var(--muted);opacity:0.7;padding:2px 0;line-height:1.4}
+
+.preset-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.pbtn{background:var(--bg);border:1px solid var(--border);color:var(--muted);padding:5px 6px;font-size:9px;letter-spacing:1px;text-transform:uppercase;cursor:pointer;border-radius:3px;font-family:inherit;transition:all 0.15s;text-align:center}
+.pbtn:hover{border-color:var(--accent);color:var(--accent)}
+.pbtn.active{border-color:var(--accent);color:var(--accent);background:rgba(176,90,0,0.08)}
+
+.run-btn{width:100%;background:linear-gradient(135deg,rgba(176,90,0,0.1),rgba(124,58,237,0.05));border:1px solid var(--accent);color:var(--accent);padding:8px;font-size:11px;letter-spacing:2px;text-transform:uppercase;cursor:pointer;border-radius:4px;font-family:inherit;transition:all 0.2s;margin-top:4px}
+.run-btn:hover{background:rgba(176,90,0,0.15);box-shadow:var(--glow)}
+.run-btn.gen{border-color:var(--accent2);color:var(--accent2);background:linear-gradient(135deg,rgba(124,58,237,0.08),rgba(3,105,161,0.04))}
+.run-btn.gen:hover{box-shadow:0 0 14px rgba(124,58,237,0.2)}
+
+/* ── WORKSPACE (middle + right) ── */
+.workspace{display:flex;flex:1;min-width:0;min-height:0;overflow:hidden}
+
+/* ── PIPELINE STAGES (middle) ── */
+.pipeline-col{display:flex;flex-direction:column;flex:1;min-width:300px;padding:10px;gap:8px;overflow:hidden;border-right:1px solid var(--border);min-height:0}
+
+.pane-toggle{display:flex;align-items:center;justify-content:space-between;padding:5px 0;border-bottom:1px solid var(--border);margin-bottom:6px;cursor:pointer;user-select:none;flex-shrink:0}
+.pane-toggle-lbl{font-size:10px;letter-spacing:2px;color:var(--muted);text-transform:uppercase}
+.pane-toggle-lbl b{color:var(--accent)}
+.pane-toggle-arrow{font-size:10px;color:var(--muted)}
+.panel-body.collapsed{display:none}
+
+/* splitter */
+.splitter{width:6px;background:transparent;cursor:col-resize;flex-shrink:0;margin:0 2px;position:relative}
+.splitter:hover,.splitter.active{background:var(--accent);border-radius:3px}
+.splitter::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:2px;height:30px;background:var(--border2);border-radius:1px}
+
+/* pipeline stages scroll */
+.stage-scroll-wrap{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.stage-scroll{flex:1;overflow-y:auto;overflow-x:hidden;min-height:0}
+.stage-scroll::-webkit-scrollbar{width:4px}
+.stage-scroll::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+.stage-scroll::-webkit-scrollbar-track{background:transparent}
+
+.stage-block{border:1px solid var(--border);border-radius:5px;overflow:hidden;background:var(--card)}
+.stage-lbl{padding:4px 10px;font-size:9px;letter-spacing:2px;color:var(--muted);text-transform:uppercase;background:var(--card2);display:flex;justify-content:space-between;align-items:center}
+.stage-lbl span{color:var(--accent2);font-size:9px}
+.stage-canvas-wrap{padding:6px;display:flex;justify-content:center;background:var(--bg);overflow:auto;min-height:50px}
+.stage-canvas-wrap canvas{max-width:100%;height:auto;image-rendering:pixelated;display:block;cursor:pointer}
+.stage-canvas-wrap canvas.expanded{max-height:none}
+
+.prog-bar-wrap{height:3px;background:var(--border);border-radius:2px;overflow:hidden;flex-shrink:0}
+.prog-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0%;transition:width 0.3s;border-radius:2px}
+
+/* ── LIVE PREVIEW (right) ── */
+.preview-col{display:flex;flex-direction:column;flex:1;min-width:300px;padding:10px;gap:8px;overflow:hidden;min-height:0}
+.preview-col>*{flex-shrink:0}
+.preview-col>*:last-child{flex-shrink:1}
+
+#preview-canvas{width:100%;flex:1;height:100%;border:1px solid var(--border);border-radius:4px;background:#f0eeea;display:block}
+
+.plot-info{font-size:9px;color:var(--muted);padding:2px 0;flex-shrink:0}
+.plot-prog-wrap{height:3px;background:var(--border);border-radius:2px;overflow:hidden;flex-shrink:0}
+.plot-prog{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));width:0%;transition:width 0.3s;border-radius:2px}
+
+.upload-zone{border:1px dashed var(--border2);border-radius:4px;padding:16px;text-align:center;cursor:pointer;color:var(--muted);font-size:10px;transition:all 0.2s;letter-spacing:1px;background:var(--bg)}
+.upload-zone:hover,.upload-zone.drag{border-color:var(--accent);color:var(--accent);background:rgba(176,90,0,0.04)}
+
+/* ── STATUSBAR ── */
+.statusbar{display:flex;align-items:center;padding:0 12px;height:32px;gap:16px;font-size:10px;color:var(--muted);letter-spacing:1px;background:var(--glass);border-top:1px solid var(--border);backdrop-filter:blur(8px)}
+.sb-item{display:flex;align-items:center;gap:5px}
+.sb-item b{color:var(--text)}
+#sb-status{flex:1;text-align:right;font-size:10px}
+
+.kinematics-row{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.kin-box{background:var(--bg);border:1px solid var(--border);border-radius:3px;padding:5px 8px;text-align:center}
+.kin-box .kval{font-size:13px;color:var(--accent2);font-weight:bold}
+.kin-box .klbl{font-size:9px;color:var(--muted);letter-spacing:1px}
+
+/* serial mini */
+.serial-mini{background:var(--card);border:1px solid var(--border);border-radius:4px;padding:6px;font-size:10px;color:var(--muted);overflow-y:auto;height:80px;flex-shrink:0}
+.serial-mini::-webkit-scrollbar{width:3px}
+.serial-mini::-webkit-scrollbar-thumb{background:var(--border2)}
+.log-line{padding:1px 0;line-height:1.4}
+.log-line.ok{color:var(--green)}
+.log-line.err{color:var(--red)}
+.log-line.tx{color:var(--accent2)}
+.log-line.info{color:var(--amber)}
+</style>
+</head>
+<body>
+
+<!-- TOP BAR -->
+<div class="topbar">
+  <div class="logo">DIFF PLOTTER <span>v19</span></div>
+  <button class="topbtn primary" onclick="runPipeline()">▶ PIPELINE</button>
+  <button class="topbtn gen" onclick="generateSteps()">⚙ GEN STEPS</button>
+  <button class="topbtn" onclick="demoRun()" id="demo-btn">◈ DEMO</button>
+  <button class="topbtn go" onclick="startPlot()" id="plot-btn">▶▶ PLOT</button>
+  <button class="topbtn stop" onclick="stopPlot()">■ STOP</button>
+  <button class="topbtn" onclick="downloadSteps()">↓ STEPS</button>
+  <div class="spacer"></div>
+  <div class="conn-area">
+    <div class="conn-dot" id="conn-dot"></div>
+    <select class="port-sel" id="port-sel"><option>-- port --</option></select>
+    <button class="topbtn" onclick="refreshPorts()">⟳</button>
+    <button class="topbtn" onclick="toggleConnect()" id="conn-btn">CONNECT</button>
+    <div class="status-pill" id="conn-status">OFFLINE</div>
+  </div>
+</div>
+
+<!-- WORKSPACE -->
+<div class="workspace">
+
+  <!-- SETTINGS PANEL (left) -->
+  <div class="settings-panel">
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">01 Input <span class="badge">upload</span><span>▾</span></div>
+      <div class="sec-body">
+        <div class="upload-zone" id="upload-zone" onclick="document.getElementById('file-in').click()">
+          click or drag image<br><span style="font-size:9px;opacity:0.5">PNG / JPG / BMP</span>
+        </div>
+        <input type="file" id="file-in" accept="image/*" style="display:none">
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">02 Presets <span>▾</span></div>
+      <div class="sec-body">
+        <div class="preset-grid">
+          <button class="pbtn" onclick="applyPreset('sketch',this)">Sketch</button>
+          <button class="pbtn" onclick="applyPreset('plotter',this)">Plotter</button>
+          <button class="pbtn" onclick="applyPreset('clean',this)">Clean Line</button>
+          <button class="pbtn" onclick="applyPreset('scan',this)">Scanned</button>
+          <button class="pbtn" onclick="applyPreset('photo',this)">Photo</button>
+          <button class="pbtn" onclick="applyPreset('anime',this)">Anime</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">03 Preprocess <span>▾</span></div>
+      <div class="sec-body">
+        <div class="row"><label>Gray mode</label>
+          <select id="gray-mode"><option value="lum">Luminance</option><option value="avg">Average</option><option value="red">Red</option><option value="green">Green</option><option value="blue">Blue</option></select>
+        </div>
+        <div class="row"><label>CLAHE</label><input type="checkbox" id="use-clahe"><span class="info-tag" style="margin-left:4px">adaptive eq</span></div>
+        <div class="row"><label>CLAHE clip</label><input type="range" id="clahe-clip" min="1" max="20" value="4" step="1"><span class="val" id="v-clahe-clip">4</span></div>
+        <div class="row"><label>Gauss blur σ</label><input type="range" id="blur-px" min="0" max="7" value="1" step="1"><span class="val" id="v-blur-px">1</span></div>
+        <div class="row"><label>Top-hat</label><input type="checkbox" id="use-tophat"></div>
+        <div class="row"><label>Top-hat r</label><input type="range" id="tophat-size" min="3" max="21" value="9" step="2"><span class="val" id="v-tophat-size">9</span></div>
+        <div class="row"><label>Invert input</label><input type="checkbox" id="use-invert"></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">04 Binarize <span>▾</span></div>
+      <div class="sec-body">
+        <div class="row"><label>Method</label>
+          <select id="bin-method" style="font-size:10px">
+            <optgroup label="Global"><option value="otsu">Otsu auto</option><option value="triangle">Triangle</option><option value="manual">Manual</option></optgroup>
+            <optgroup label="Adaptive"><option value="adapt-gauss">Adaptive Gauss</option><option value="adapt-mean">Adaptive Mean</option><option value="sauvola">Sauvola</option><option value="niblack">Niblack</option><option value="bradley">Bradley-Roth</option></optgroup>
+            <option value="none">None</option>
+          </select>
+        </div>
+        <div class="row"><label>Manual thresh</label><input type="range" id="thresh-val" min="0" max="255" value="128"><span class="val" id="v-thresh-val">128</span></div>
+        <div class="row"><label>Block size</label><input type="range" id="block-size" min="3" max="99" value="25" step="2"><span class="val" id="v-block-size">25</span></div>
+        <div class="row"><label>k / C offset</label><input type="range" id="thresh-k" min="-50" max="50" value="5"><span class="val" id="v-thresh-k">5</span></div>
+        <div class="row"><label>Invert out</label><input type="checkbox" id="bin-invert" checked></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">05 Edge Detect <span>▾</span></div>
+      <div class="sec-body">
+        <div class="row"><label>Method</label>
+          <select id="edge-method" style="font-size:10px">
+            <option value="none">None (use binary)</option>
+            <optgroup label="Classical"><option value="canny">Canny</option><option value="sobel">Sobel</option><option value="scharr">Scharr</option><option value="prewitt">Prewitt</option><option value="roberts">Roberts Cross</option><option value="laplacian">Laplacian</option><option value="log">LoG</option><option value="dog">DoG</option></optgroup>
+            <optgroup label="Contour"><option value="contour-ext">Contour External</option><option value="contour-all">Contour All</option></optgroup>
+          </select>
+        </div>
+        <div class="row"><label>Canny lo</label><input type="range" id="canny-lo" min="0" max="200" value="50"><span class="val" id="v-canny-lo">50</span></div>
+        <div class="row"><label>Canny hi</label><input type="range" id="canny-hi" min="0" max="400" value="150"><span class="val" id="v-canny-hi">150</span></div>
+        <div class="row"><label>LoG sigma</label><input type="range" id="log-sigma" min="1" max="10" value="2" step="0.5"><span class="val" id="v-log-sigma">2</span></div>
+        <div class="row"><label>DoG σ1</label><input type="range" id="dog-s1" min="1" max="8" value="1" step="0.5"><span class="val" id="v-dog-s1">1</span></div>
+        <div class="row"><label>DoG σ2</label><input type="range" id="dog-s2" min="1" max="12" value="2" step="0.5"><span class="val" id="v-dog-s2">2</span></div>
+        <div class="row"><label>Edge thresh</label><input type="range" id="edge-thresh" min="0" max="255" value="30"><span class="val" id="v-edge-thresh">30</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">06 Morphology <span>▾</span></div>
+      <div class="sec-body">
+        <div class="row"><label>Close gaps</label><input type="checkbox" id="use-close"></div>
+        <div class="row"><label>Close r</label><input type="range" id="close-size" min="1" max="15" value="3" step="2"><span class="val" id="v-close-size">3</span></div>
+        <div class="row"><label>Dilate</label><input type="checkbox" id="use-dilate"></div>
+        <div class="row"><label>Dilate r</label><input type="range" id="dilate-px" min="1" max="9" value="1" step="2"><span class="val" id="v-dilate-px">1</span></div>
+        <div class="row"><label>Erode</label><input type="checkbox" id="use-erode"></div>
+        <div class="row"><label>Erode r</label><input type="range" id="erode-px" min="1" max="9" value="1" step="2"><span class="val" id="v-erode-px">1</span></div>
+        <div class="row"><label>Remove noise</label><input type="checkbox" id="use-denoise"></div>
+        <div class="row"><label>Min blob px</label><input type="range" id="min-blob" min="1" max="200" value="20"><span class="val" id="v-min-blob">20</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">07 Skeleton <span>▾</span></div>
+      <div class="sec-body">
+        <div class="row"><label>Method</label>
+          <select id="skel-method">
+            <option value="none">None</option>
+            <option value="zhangsuen" selected>Zhang-Suen</option>
+            <option value="guohall">Guo-Hall</option>
+            <option value="morph">Morphological</option>
+            <option value="dist">Distance MAT</option>
+          </select>
+        </div>
+        <div class="row"><label>Max iters</label><input type="range" id="skel-iters" min="1" max="60" value="20"><span class="val" id="v-skel-iters">20</span></div>
+        <div class="row"><label>MAT thresh</label><input type="range" id="mat-thresh" min="1" max="20" value="3"><span class="val" id="v-mat-thresh">3</span></div>
+        <div class="row"><label>Prune spurs</label><input type="checkbox" id="skel-prune" checked></div>
+        <div class="row"><label>Prune len</label><input type="range" id="spur-len" min="1" max="30" value="6"><span class="val" id="v-spur-len">6</span></div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">08 Kinematics <span class="badge">math</span><span>▾</span></div>
+      <div class="sec-body">
+        <div class="info-tag" style="margin-bottom:4px">bearing=atan2(dx,dy) | dh=(stR-stL)/SPM/AXLE</div>
+        <div class="row"><label>Wheel Ø mm</label><input type="number" id="wheel-mm" value="60" min="10" max="200"></div>
+        <div class="row"><label>Axle mm</label><input type="number" id="axle-mm" value="120" min="10" max="500"></div>
+        <div class="row"><label>Microsteps</label>
+          <select id="microsteps"><option value="1">1 (full)</option><option value="2">2</option><option value="4">4</option><option value="8">8</option><option value="16">16</option><option value="32" selected>32 (DRV8825)</option></select>
+        </div>
+        <div class="row"><label>Paper W mm</label><input type="number" id="paper-w" value="150" min="20" max="500"></div>
+        <div class="row"><label>Paper H mm</label><input type="number" id="paper-h" value="150" min="20" max="500"></div>
+        <div class="row"><label>Step res mm</label><input type="range" id="step-mm" min="0.1" max="5" value="0.5" step="0.1"><span class="val" id="v-step-mm">0.5</span></div>
+        <div class="row"><label>Travel res</label><input type="range" id="travel-mm" min="0.5" max="10" value="2" step="0.5"><span class="val" id="v-travel-mm">2</span></div>
+        <div class="row"><label>Min stroke</label><input type="range" id="min-stroke" min="0.5" max="20" value="3" step="0.5"><span class="val" id="v-min-stroke">3</span></div>
+        <div class="row"><label>Park mm</label><input type="number" id="park-mm" value="20" min="0" max="100"></div>
+        <div class="row"><label>RDP epsilon</label><input type="range" id="rdp-eps" min="0" max="5" value="1" step="0.25"><span class="val" id="v-rdp-eps">1</span></div>
+        <div class="row"><label>Mirror Y</label><input type="checkbox" id="mirror-y" checked></div>
+        <div class="kinematics-row" style="margin-top:6px" id="kin-display">
+          <div class="kin-box"><div class="kval" id="kv-spm">—</div><div class="klbl">STEPS/MM</div></div>
+          <div class="kin-box"><div class="kval" id="kv-spd">—</div><div class="klbl">STEPS/DEG</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="sec-head" onclick="toggleSec(this)">09 Speed / Servo <span>▾</span></div>
+      <div class="sec-body">
+        <div class="row"><label>Draw speed µs</label><input type="number" id="draw-us" value="300" min="100" max="5000"></div>
+        <div class="row"><label>Travel µs</label><input type="number" id="travel-us" value="120" min="100" max="5000"></div>
+        <div class="row"><label>Servo pin</label><input type="number" id="servo-pin" value="13" min="2" max="13"></div>
+        <div class="row"><label>Pen down°</label><input type="number" id="pen-down-ang" value="30" min="0" max="180"></div>
+        <div class="row"><label>Pen up°</label><input type="number" id="pen-up-ang" value="90" min="0" max="180"></div>
+        <div class="row"><label>Servo enable</label><input type="checkbox" id="servo-enable" checked style="width:auto"></div>
+      </div>
+    </div>
+
+    <button class="run-btn" onclick="runPipeline()">▶ RUN IMAGE PIPELINE</button>
+    <button class="run-btn gen" onclick="generateSteps()" style="margin-top:6px">⚙ GENERATE STEPS</button>
+  </div>
+
+  <!-- SPLITTER -->
+  <div class="splitter" id="splitter1" onmousedown="startHSplit(event)"></div>
+
+  <!-- PIPELINE STAGES (middle) -->
+  <div class="pipeline-col">
+
+    <div class="pane-toggle" onclick="togglePanel('stages-body','stages-arrow')">
+      <span class="pane-toggle-lbl">Pipeline Stages <b id="stages-count"></b></span>
+      <span class="pane-toggle-arrow" id="stages-arrow">▾</span>
+    </div>
+    <div class="panel-body stage-scroll-wrap" id="stages-body" style="flex:1;min-height:0">
+      <div class="stage-scroll" id="stage-scroll">
+        <div style="color:var(--border2);font-size:10px;letter-spacing:1px;padding:40px 0;text-align:center;background:var(--card);border-radius:4px;border:1px dashed var(--border)">Load an image → Run Pipeline<br><span style="opacity:0.5;font-size:9px">click any stage image to expand</span></div>
+      </div>
+    </div>
+
+    <div class="prog-bar-wrap"><div class="prog-bar" id="prog-bar"></div></div>
+    <div style="font-size:9px;color:var(--muted);letter-spacing:1px;padding:2px 0;flex-shrink:0" id="stage-status">—</div>
+
+    <div class="serial-mini" id="serial-log"><div class="log-line info">// Web Serial — Chrome/Edge only</div></div>
+  </div>
+
+  <!-- SPLITTER -->
+  <div class="splitter" id="splitter2" onmousedown="startHSplit(event)"></div>
+
+  <!-- LIVE PREVIEW (right) -->
+  <div class="preview-col">
+
+    <div class="pane-toggle">
+      <span class="pane-toggle-lbl">Dead Reckoning Preview</span>
+    </div>
+    <canvas id="preview-canvas"></canvas>
+    <div class="plot-prog-wrap"><div class="plot-prog" id="plot-prog"></div></div>
+    <div class="plot-info" id="plot-status">—</div>
+
+    <div class="pane-toggle" style="margin-top:8px" onclick="togglePanel('cmd-body','cmd-arrow')">
+      <span class="pane-toggle-lbl">Commands</span>
+      <span class="pane-toggle-arrow" id="cmd-arrow">▾</span>
+    </div>
+    <div class="panel-body" id="cmd-body">
+      <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px">
+        <button class="topbtn" onclick="sendCmd('PING')">PING</button>
+        <button class="topbtn" onclick="sendCmd('STOP')">E-STOP</button>
+        <button class="topbtn" onclick="sendPenUp()">PEN↑</button>
+        <button class="topbtn" onclick="sendPenDown()">PEN↓</button>
+        <button class="topbtn" onclick="configServo()">SERVO</button>
+      </div>
+      <div style="display:flex;gap:4px">
+        <input type="text" id="serial-in" placeholder="custom cmd…" style="flex:1;background:var(--bg);border:1px solid var(--border2);color:var(--text);padding:4px 6px;border-radius:3px;font-family:inherit;font-size:11px" onkeydown="if(event.key==='Enter')sendManual()">
+        <button class="topbtn" onclick="sendManual()">SEND</button>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<!-- STATUSBAR -->
+<div class="statusbar">
+  <div class="sb-item">steps/mm: <b id="sb-spm">—</b></div>
+  <div class="sb-item">steps/deg: <b id="sb-spd">—</b></div>
+  <div class="sb-item">strokes: <b id="sb-strokes">0</b></div>
+  <div class="sb-item">moves: <b id="sb-moves">0</b></div>
+  <div class="sb-item">img: <b id="sb-img">—</b></div>
+  <div id="sb-status">idle</div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════
+//  GLOBALS
+// ═══════════════════════════════════════════
+const $=id=>document.getElementById(id);
+let srcImageData=null, allMoves=[], plotterPort=null, plotterWriter=null, plotterReader=null;
+let isPlotting=false, stopFlag=false, lastSkelBin=null, lastW=0, lastH=0;
+
+// slider sync
+['clahe-clip','blur-px','tophat-size','thresh-val','block-size','thresh-k',
+ 'canny-lo','canny-hi','log-sigma','dog-s1','dog-s2','edge-thresh',
+ 'close-size','dilate-px','erode-px','min-blob','skel-iters','mat-thresh',
+ 'spur-len','rdp-eps','step-mm','travel-mm','min-stroke'].forEach(id=>{
+  const el=$('v-'+id);
+  if(el) $(id).addEventListener('input',()=>el.textContent=$(id).value);
+});
+['wheel-mm','axle-mm','microsteps'].forEach(id=>{
+  $(id).addEventListener('change',updateKin);
+});
+updateKin();
+
+function updateKin(){
+  const wh=+$('wheel-mm').value, ax=+$('axle-mm').value, ms=+$('microsteps').value;
+  const spm=(200*ms)/(Math.PI*wh);
+  const spd=(Math.PI*ax/360)*spm;
+  $('kv-spm').textContent=spm.toFixed(2);
+  $('kv-spd').textContent=spd.toFixed(2);
+  $('sb-spm').textContent=spm.toFixed(2);
+  $('sb-spd').textContent=spd.toFixed(2);
+}
+
+function toggleSec(el){
+  const b=el.nextElementSibling;
+  b.classList.toggle('collapsed');
+  el.querySelector('span:last-child').textContent=b.classList.contains('collapsed')?'▸':'▾';
+}
+
+function togglePanel(bodyId,arrowId){
+  const b=$(bodyId);
+  b.classList.toggle('collapsed');
+  if(arrowId) $(arrowId).textContent=b.classList.contains('collapsed')?'▸':'▾';
+}
+
+// ── Horizontal splitter logic ──
+let _hsplit={active:null,startX:0,startW1:0,startW2:0};
+function startHSplit(e){
+  e.preventDefault();
+  const splitters=document.querySelectorAll('.splitter');
+  let idx=0;
+  for(let s of splitters){if(s===e.target||s===e.target.parentElement){break;}idx++;}
+  const panels=document.querySelectorAll('.settings-panel,.pipeline-col,.preview-col');
+  _hsplit={active:idx,startX:e.clientX,startW1:panels[idx].offsetWidth,startW2:panels[idx+1].offsetWidth};
+  document.addEventListener('mousemove',doHSplit);
+  document.addEventListener('mouseup',stopHSplit);
+  e.target.classList.add('active');
+}
+function doHSplit(e){
+  if(!_hsplit.active&&_hsplit.active!==0)return;
+  const dx=e.clientX-_hsplit.startX;
+  const panels=document.querySelectorAll('.settings-panel,.pipeline-col,.preview-col');
+  const left=panels[_hsplit.active];
+  const right=panels[_hsplit.active+1];
+  const newLeft=Math.max(200,_hsplit.startW1+dx);
+  const newRight=Math.max(200,_hsplit.startW2-dx);
+  left.style.flex='none';
+  left.style.width=newLeft+'px';
+  right.style.flex='none';
+  right.style.width=newRight+'px';
+}
+function stopHSplit(){
+  _hsplit={active:null,startX:0,startW1:0,startW2:0};
+  document.querySelectorAll('.splitter').forEach(s=>s.classList.remove('active'));
+  document.removeEventListener('mousemove',doHSplit);
+  document.removeEventListener('mouseup',stopHSplit);
+}
+
+// ═══════════════════════════════════════════
+//  FILE LOAD
+// ═══════════════════════════════════════════
+$('file-in').addEventListener('change',e=>loadFile(e.target.files[0]));
+$('upload-zone').addEventListener('dragover',e=>{e.preventDefault();$('upload-zone').classList.add('drag')});
+$('upload-zone').addEventListener('dragleave',()=>$('upload-zone').classList.remove('drag'));
+$('upload-zone').addEventListener('drop',e=>{e.preventDefault();$('upload-zone').classList.remove('drag');loadFile(e.dataTransfer.files[0])});
+document.addEventListener('dragover',e=>e.preventDefault());
+document.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files[0])loadFile(e.dataTransfer.files[0])});
+
+function loadFile(f){
+  if(!f||!f.type.startsWith('image/'))return;
+  const img=new Image(), url=URL.createObjectURL(f);
+  img.onload=()=>{
+    const max=512, scale=Math.min(1,max/img.width,max/img.height);
+    const w=Math.round(img.width*scale), h=Math.round(img.height*scale);
+    const tmp=document.createElement('canvas');tmp.width=w;tmp.height=h;
+    tmp.getContext('2d').drawImage(img,0,0,w,h);
+    srcImageData=tmp.getContext('2d').getImageData(0,0,w,h);
+    $('upload-zone').textContent=f.name;
+    $('sb-img').textContent=`${img.width}×${img.height}→${w}×${h}`;
+    URL.revokeObjectURL(url);
+    setStatus('Image loaded — run pipeline');
+  };
+  img.src=url;
+}
+
+// ═══════════════════════════════════════════
+//  IMAGE PROCESSING
+// ═══════════════════════════════════════════
+function toGray(d,w,h,mode){
+  const g=new Uint8Array(w*h);
+  for(let i=0;i<w*h;i++){const r=d[i*4],g2=d[i*4+1],b=d[i*4+2];g[i]=mode==='avg'?(r+g2+b)/3:mode==='red'?r:mode==='green'?g2:mode==='blue'?b:0.299*r+0.587*g2+0.114*b;}
+  return g;
+}
+function gaussBlur(g,w,h,sigma){
+  if(sigma<0.5)return new Float32Array(g);
+  const r=Math.ceil(sigma*3)|0,size=2*r+1,k=new Float32Array(size*size);let s=0;
+  for(let y=-r;y<=r;y++)for(let x=-r;x<=r;x++){const v=Math.exp(-(x*x+y*y)/(2*sigma*sigma));k[(y+r)*size+(x+r)]=v;s+=v;}
+  for(let i=0;i<k.length;i++)k[i]/=s;
+  const out=new Float32Array(w*h);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){let v=0;for(let ky=-r;ky<=r;ky++)for(let kx=-r;kx<=r;kx++)v+=g[Math.max(0,Math.min(h-1,y+ky))*w+Math.max(0,Math.min(w-1,x+kx))]*k[(ky+r)*size+(kx+r)];out[y*w+x]=v;}
+  return out;
+}
+function clahe(g,w,h,clip){
+  const tile=32,out=new Uint8Array(w*h),tx=Math.ceil(w/tile),ty=Math.ceil(h/tile);
+  function tileCDF(gx,gy){const x0=gx*tile,y0=gy*tile,x1=Math.min(x0+tile,w),y1=Math.min(y0+tile,h);const hist=new Float32Array(256);let n=0;for(let y=y0;y<y1;y++)for(let x=x0;x<x1;x++){hist[g[y*w+x]]++;n++;}const limit=clip*n/256;let excess=0;for(let i=0;i<256;i++){if(hist[i]>limit){excess+=hist[i]-limit;hist[i]=limit;}}const add=excess/256;for(let i=0;i<256;i++)hist[i]+=add;const cdf=new Float32Array(256);cdf[0]=hist[0];for(let i=1;i<256;i++)cdf[i]=cdf[i-1]+hist[i];const mn=cdf[0];for(let i=0;i<256;i++)cdf[i]=Math.round((cdf[i]-mn)/(n-mn)*255);return cdf;}
+  const cdfs=[];for(let gy=0;gy<ty;gy++){cdfs[gy]=[];for(let gx=0;gx<tx;gx++)cdfs[gy][gx]=tileCDF(gx,gy);}
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++)out[y*w+x]=cdfs[Math.min(Math.floor(y/tile),ty-1)][Math.min(Math.floor(x/tile),tx-1)][g[y*w+x]];
+  return out;
+}
+function tophat(g,w,h,r){const eroded=morphGray(g,w,h,r,'erode'),opened=morphGray(eroded,w,h,r,'dilate'),out=new Uint8Array(w*h);for(let i=0;i<w*h;i++)out[i]=Math.min(255,Math.max(0,g[i]-opened[i]));return out;}
+function morphGray(g,w,h,r,op){const out=new Uint8Array(w*h);for(let y=0;y<h;y++)for(let x=0;x<w;x++){let best=op==='dilate'?0:255;for(let ky=-r;ky<=r;ky++)for(let kx=-r;kx<=r;kx++){const v=g[Math.max(0,Math.min(h-1,y+ky))*w+Math.max(0,Math.min(w-1,x+kx))];best=op==='dilate'?Math.max(best,v):Math.min(best,v);}out[y*w+x]=best;}return out;}
+function morphBin(b,w,h,r,op){const out=new Uint8Array(w*h);for(let y=0;y<h;y++)for(let x=0;x<w;x++){let hit=false;for(let ky=-r;ky<=r&&!hit;ky++)for(let kx=-r;kx<=r&&!hit;kx++)if(op==='dilate'?b[Math.max(0,Math.min(h-1,y+ky))*w+Math.max(0,Math.min(w-1,x+kx))]:!b[Math.max(0,Math.min(h-1,y+ky))*w+Math.max(0,Math.min(w-1,x+kx))])hit=true;out[y*w+x]=op==='dilate'?(hit?1:0):(hit?0:1);}return out;}
+function otsu(g,w,h){const hist=new Float32Array(256);for(let i=0;i<w*h;i++)hist[g[i]]++;const n=w*h;let sum=0;for(let i=0;i<256;i++)sum+=i*hist[i];let wb=0,sb=0,best=0,t=0;for(let i=0;i<256;i++){wb+=hist[i];if(!wb)continue;const wf=n-wb;if(!wf)break;sb+=i*hist[i];const mf=(sum-sb)/wf,mb=sb/wb,v=wb*wf*(mb-mf)**2;if(v>best){best=v;t=i;}}return t;}
+function triangle(g,w,h){const hist=new Float32Array(256);for(let i=0;i<w*h;i++)hist[g[i]]++;let peak=0,pi=0;for(let i=0;i<256;i++)if(hist[i]>peak){peak=hist[i];pi=i;}const end=pi<128?255:0,dx=end-pi,dy=-hist[pi],len=Math.sqrt(dx*dx+dy*dy);let best=0,t=pi;for(let i=Math.min(pi,end);i<=Math.max(pi,end);i++){const d=Math.abs(dy*(i-end)-dx*(hist[i]))/len;if(d>best){best=d;t=i;}}return t;}
+function applyThresh(g,w,h,t,inv){const b=new Uint8Array(w*h);for(let i=0;i<w*h;i++)b[i]=(g[i]>t)?(inv?0:1):(inv?1:0);return b;}
+function adaptThresh(g,w,h,bs,C,type,inv){const r=Math.floor(bs/2),out=new Uint8Array(w*h);for(let y=0;y<h;y++)for(let x=0;x<w;x++){let sum=0,cnt=0,sumSq=0;for(let ky=-r;ky<=r;ky++)for(let kx=-r;kx<=r;kx++){const v=g[Math.max(0,Math.min(h-1,y+ky))*w+Math.max(0,Math.min(w-1,x+kx))];sum+=v;cnt++;sumSq+=v*v;}const mean=sum/cnt,std=Math.sqrt(Math.max(0,sumSq/cnt-mean*mean));let t=type==='sauvola'?mean*(1+(C/100)*(std/128-1)):type==='niblack'?mean-(C/100)*std:type==='bradley'?mean*(1-C/100):mean-C;out[y*w+x]=(g[y*w+x]>t)?(inv?0:1):(inv?1:0);}return out;}
+function cannyEdge(g,w,h,lo,hi){const blur=gaussBlur(g,w,h,1.4),fb=new Uint8Array(w*h);for(let i=0;i<w*h;i++)fb[i]=Math.max(0,Math.min(255,Math.round(blur[i])));const mag=new Float32Array(w*h),ang=new Float32Array(w*h);for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){const gx=-fb[(y-1)*w+(x-1)]+fb[(y-1)*w+(x+1)]-2*fb[y*w+(x-1)]+2*fb[y*w+(x+1)]-fb[(y+1)*w+(x-1)]+fb[(y+1)*w+(x+1)];const gy=-fb[(y-1)*w+(x-1)]-2*fb[(y-1)*w+x]-fb[(y-1)*w+(x+1)]+fb[(y+1)*w+(x-1)]+2*fb[(y+1)*w+x]+fb[(y+1)*w+(x+1)];mag[y*w+x]=Math.sqrt(gx*gx+gy*gy);ang[y*w+x]=Math.atan2(gy,gx);}const nms=new Float32Array(w*h);for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){const m=mag[y*w+x],a=(ang[y*w+x]*180/Math.PI%180+180)%180;let q,r2;if(a<22.5||a>=157.5){q=mag[y*w+(x+1)];r2=mag[y*w+(x-1)];}else if(a<67.5){q=mag[(y+1)*w+(x-1)];r2=mag[(y-1)*w+(x+1)];}else if(a<112.5){q=mag[(y+1)*w+x];r2=mag[(y-1)*w+x];}else{q=mag[(y-1)*w+(x-1)];r2=mag[(y+1)*w+(x+1)];}if(m>=q&&m>=r2)nms[y*w+x]=m;}const out=new Uint8Array(w*h);for(let i=0;i<w*h;i++){if(nms[i]>=hi)out[i]=255;else if(nms[i]>=lo)out[i]=100;}for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){if(out[y*w+x]===100){let c=false;for(let ky=-1;ky<=1;ky++)for(let kx=-1;kx<=1;kx++)if(out[(y+ky)*w+(x+kx)]===255)c=true;out[y*w+x]=c?255:0;}}for(let i=0;i<w*h;i++)if(out[i]!==255)out[i]=0;return out;}
+function gradMag(g,w,h,type){const out=new Float32Array(w*h);let mx=0;for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){const p=(py,px)=>g[py*w+px];let gx,gy;if(type==='scharr'){gx=-3*p(y-1,x-1)+3*p(y-1,x+1)-10*p(y,x-1)+10*p(y,x+1)-3*p(y+1,x-1)+3*p(y+1,x+1);gy=-3*p(y-1,x-1)-10*p(y-1,x)-3*p(y-1,x+1)+3*p(y+1,x-1)+10*p(y+1,x)+3*p(y+1,x+1);}else if(type==='prewitt'){gx=-p(y-1,x-1)+p(y-1,x+1)-p(y,x-1)+p(y,x+1)-p(y+1,x-1)+p(y+1,x+1);gy=-p(y-1,x-1)-p(y-1,x)-p(y-1,x+1)+p(y+1,x-1)+p(y+1,x)+p(y+1,x+1);}else{gx=-p(y-1,x-1)+p(y-1,x+1)-2*p(y,x-1)+2*p(y,x+1)-p(y+1,x-1)+p(y+1,x+1);gy=-p(y-1,x-1)-2*p(y-1,x)-p(y-1,x+1)+p(y+1,x-1)+2*p(y+1,x)+p(y+1,x+1);}const m=Math.sqrt(gx*gx+gy*gy);out[y*w+x]=m;if(m>mx)mx=m;}const r=new Uint8Array(w*h);for(let i=0;i<w*h;i++)r[i]=Math.round(out[i]/mx*255);return r;}
+function roberts(g,w,h){const out=new Float32Array(w*h);let mx=0;for(let y=0;y<h-1;y++)for(let x=0;x<w-1;x++){const r1=g[y*w+x]-g[(y+1)*w+(x+1)],r2=g[y*w+(x+1)]-g[(y+1)*w+x],m=Math.sqrt(r1*r1+r2*r2);out[y*w+x]=m;if(m>mx)mx=m;}const r=new Uint8Array(w*h);for(let i=0;i<w*h;i++)r[i]=Math.round(out[i]/mx*255);return r;}
+function laplacian(g,w,h){const k=[-1,-1,-1,-1,8,-1,-1,-1,-1],out=new Float32Array(w*h);let mx=0;for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){let v=0;for(let ky=-1;ky<=1;ky++)for(let kx=-1;kx<=1;kx++)v+=g[(y+ky)*w+(x+kx)]*k[(ky+1)*3+(kx+1)];out[y*w+x]=Math.abs(v);if(Math.abs(v)>mx)mx=Math.abs(v);}const r=new Uint8Array(w*h);for(let i=0;i<w*h;i++)r[i]=Math.round(out[i]/mx*255);return r;}
+function logEdge(g,w,h,sigma){return laplacian(new Uint8Array(gaussBlur(g,w,h,sigma).map(v=>Math.max(0,Math.min(255,Math.round(v))))),w,h);}
+function dogEdge(g,w,h,s1,s2){const b1=gaussBlur(g,w,h,s1),b2=gaussBlur(g,w,h,s2),out=new Float32Array(w*h);let mn=0,mx=0;for(let i=0;i<w*h;i++){out[i]=b1[i]-b2[i];if(out[i]<mn)mn=out[i];if(out[i]>mx)mx=out[i];}const r=new Uint8Array(w*h);const rng=mx-mn;for(let i=0;i<w*h;i++)r[i]=Math.round((out[i]-mn)/rng*255);return r;}
+function findContours(bin,w,h){const vis=new Uint8Array(w*h),res=new Uint8Array(w*h);const dx=[1,1,0,-1,-1,-1,0,1],dy=[0,1,1,1,0,-1,-1,-1];for(let y=0;y<h;y++)for(let x=0;x<w;x++){if(!bin[y*w+x]||vis[y*w+x])continue;let border=false;for(let d=0;d<4;d++){const nx=x+[1,-1,0,0][d],ny=y+[0,0,1,-1][d];if(nx<0||nx>=w||ny<0||ny>=h||!bin[ny*w+nx]){border=true;break;}}if(!border)continue;const q=[[x,y]];vis[y*w+x]=1;while(q.length){const[cx,cy]=q.shift();let b2=false;for(let d=0;d<4;d++){const nx=cx+[1,-1,0,0][d],ny=cy+[0,0,1,-1][d];if(nx<0||nx>=w||ny<0||ny>=h||!bin[ny*w+nx]){b2=true;break;}}if(b2)res[cy*w+cx]=255;for(let d=0;d<8;d++){const nx=cx+dx[d],ny=cy+dy[d];if(nx>=0&&nx<w&&ny>=0&&ny<h&&bin[ny*w+nx]&&!vis[ny*w+nx]){vis[ny*w+nx]=1;q.push([nx,ny]);}}}}return res;}
+function zhangSuen(bin,w,h,maxI){let cur=new Uint8Array(bin);for(let it=0;it<maxI;it++){let changed=false;for(let pass=0;pass<2;pass++){const del=[];for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){if(!cur[y*w+x])continue;const p2=cur[(y-1)*w+x],p3=cur[(y-1)*w+(x+1)],p4=cur[y*w+(x+1)],p5=cur[(y+1)*w+(x+1)];const p6=cur[(y+1)*w+x],p7=cur[(y+1)*w+(x-1)],p8=cur[y*w+(x-1)],p9=cur[(y-1)*w+(x-1)];const nb=p2+p3+p4+p5+p6+p7+p8+p9;if(nb<2||nb>6)continue;const ns=[p2,p3,p4,p5,p6,p7,p8,p9,p2];let tr=0;for(let k=0;k<8;k++)if(!ns[k]&&ns[k+1])tr++;if(tr!==1)continue;if(pass===0){if(p2*p4*p6!==0)continue;if(p4*p6*p8!==0)continue;}else{if(p2*p4*p8!==0)continue;if(p2*p6*p8!==0)continue;}del.push(y*w+x);}for(const i of del){cur[i]=0;changed=true;}}if(!changed)break;}return cur;}
+function guoHall(bin,w,h,maxI){let cur=new Uint8Array(bin);for(let it=0;it<maxI;it++){let changed=false;for(let pass=0;pass<2;pass++){const del=[];for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){if(!cur[y*w+x])continue;const p1=cur[(y-1)*w+(x-1)],p2=cur[(y-1)*w+x],p3=cur[(y-1)*w+(x+1)];const p4=cur[y*w+(x-1)],p6=cur[y*w+(x+1)],p7=cur[(y+1)*w+(x-1)],p8=cur[(y+1)*w+x],p9=cur[(y+1)*w+(x+1)];const C=((!p2&&(p3||p6))?1:0)+((!p6&&(p9||p8))?1:0)+((!p8&&(p7||p4))?1:0)+((!p4&&(p1||p2))?1:0);if(C!==1)continue;const N1=(p9||p8?1:0)+(p8||p7?1:0)+(p6||p1?1:0)+(p3||p2?1:0);if(N1<2||N1>3)continue;del.push(y*w+x);}for(const i of del){cur[i]=0;changed=true;}}if(!changed)break;}return cur;}
+function morphThin(bin,w,h,maxI){let cur=new Uint8Array(bin);for(let it=0;it<maxI;it++){const prev=new Uint8Array(cur);cur=morphBin(cur,w,h,1,'erode');let same=true;for(let i=0;i<w*h;i++)if(cur[i]!==prev[i]){same=false;break;}if(same)break;}return cur;}
+function distMat(bin,w,h,thr){const dt=new Float32Array(w*h).fill(Infinity);for(let i=0;i<w*h;i++)if(bin[i])dt[i]=0;for(let y=0;y<h;y++)for(let x=0;x<w;x++){if(dt[y*w+x]>0){if(y>0&&x>0)dt[y*w+x]=Math.min(dt[y*w+x],dt[(y-1)*w+(x-1)]+1.414);if(y>0)dt[y*w+x]=Math.min(dt[y*w+x],dt[(y-1)*w+x]+1);if(y>0&&x<w-1)dt[y*w+x]=Math.min(dt[y*w+x],dt[(y-1)*w+(x+1)]+1.414);if(x>0)dt[y*w+x]=Math.min(dt[y*w+x],dt[y*w+(x-1)]+1);}}for(let y=h-1;y>=0;y--)for(let x=w-1;x>=0;x--){if(dt[y*w+x]>0){if(y<h-1&&x<w-1)dt[y*w+x]=Math.min(dt[y*w+x],dt[(y+1)*w+(x+1)]+1.414);if(y<h-1)dt[y*w+x]=Math.min(dt[y*w+x],dt[(y+1)*w+x]+1);if(y<h-1&&x>0)dt[y*w+x]=Math.min(dt[y*w+x],dt[(y+1)*w+(x-1)]+1.414);if(x<w-1)dt[y*w+x]=Math.min(dt[y*w+x],dt[y*w+(x+1)]+1);}}const out=new Uint8Array(w*h);for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){const v=dt[y*w+x];if(v<thr)continue;let isMax=true;for(let ky=-1;ky<=1&&isMax;ky++)for(let kx=-1;kx<=1&&isMax;kx++)if((ky||kx)&&dt[(y+ky)*w+(x+kx)]>v)isMax=false;if(isMax)out[y*w+x]=1;}return out;}
+function pruneSkel(skel,w,h,minLen){let cur=new Uint8Array(skel);for(let pass=0;pass<minLen;pass++){const del=[];for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){if(!cur[y*w+x])continue;let nb=0;for(let ky=-1;ky<=1;ky++)for(let kx=-1;kx<=1;kx++)if((ky||kx)&&cur[(y+ky)*w+(x+kx)])nb++;if(nb<=1)del.push(y*w+x);}if(!del.length)break;for(const i of del)cur[i]=0;}return cur;}
+function removeBlobs(bin,w,h,minSz){const labels=new Int32Array(w*h).fill(-1);let nl=0;const sizes=[];for(let y=0;y<h;y++)for(let x=0;x<w;x++){if(!bin[y*w+x]||labels[y*w+x]>=0)continue;const q=[[x,y]];labels[y*w+x]=nl;let sz=0;while(q.length){const[cx,cy]=q.shift();sz++;for(let d=0;d<4;d++){const nx=cx+[1,-1,0,0][d],ny=cy+[0,0,1,-1][d];if(nx>=0&&nx<w&&ny>=0&&ny<h&&bin[ny*w+nx]&&labels[ny*w+nx]<0){labels[ny*w+nx]=nl;q.push([nx,ny]);}}}sizes.push(sz);nl++;}const out=new Uint8Array(w*h);for(let i=0;i<w*h;i++)if(bin[i]&&sizes[labels[i]]>=minSz)out[i]=1;return out;}
+function binToID(bin,w,h){const d=new Uint8ClampedArray(w*h*4);for(let i=0;i<w*h;i++){const v=bin[i]?0:255;d[i*4]=d[i*4+1]=d[i*4+2]=v;d[i*4+3]=255;}return new ImageData(d,w,h);}
+function grayToID(g,w,h){const d=new Uint8ClampedArray(w*h*4);for(let i=0;i<w*h;i++){d[i*4]=d[i*4+1]=d[i*4+2]=g[i]&0xFF;d[i*4+3]=255;}return new ImageData(d,w,h);}
+
+// ═══════════════════════════════════════════
+//  PIPELINE RUNNER
+// ═══════════════════════════════════════════
+function setStatus(s){$('stage-status').textContent=s;$('sb-status').textContent=s;}
+function setProgress(p){$('prog-bar').style.width=p+'%';}
+
+function addStage(label,imgData,w,h,accentLabel=''){
+  const block=document.createElement('div');block.className='stage-block';
+  const lbl=document.createElement('div');lbl.className='stage-lbl';
+  lbl.innerHTML=label+(accentLabel?`<span>${accentLabel}</span>`:'');
+  const wrap=document.createElement('div');wrap.className='stage-canvas-wrap';
+  const c=document.createElement('canvas');c.width=w;c.height=h;
+  c.getContext('2d').putImageData(imgData,0,0);
+  c.title='Click to expand';
+  c.addEventListener('click',()=>{c.classList.toggle('expanded');c.title=c.classList.contains('expanded')?'Click to collapse':'Click to expand';});
+  wrap.appendChild(c);block.appendChild(lbl);block.appendChild(wrap);
+  $('stage-scroll').appendChild(block);
+  $('stage-scroll').scrollTop=$('stage-scroll').scrollHeight;
+  return c;
+}
+
+function runPipeline(){
+  if(!srcImageData){setStatus('⚠ load an image first');return;}
+  $('stage-scroll').innerHTML='';
+  const {data,width:w,height:h}=srcImageData;
+  setStatus('Starting…');setProgress(5);
+  setTimeout(()=>{
+    try{
+      addStage('00 original',srcImageData,w,h,`${w}×${h}`);setProgress(10);
+      let g=toGray(data,w,h,$('gray-mode').value);
+      if($('use-invert').checked)for(let i=0;i<g.length;i++)g[i]=255-g[i];
+      addStage('01 grayscale',grayToID(g,w,h),w,h);setProgress(18);
+      if($('use-clahe').checked)g=clahe(g,w,h,+$('clahe-clip').value);
+      const bsig=+$('blur-px').value;
+      if(bsig>0)g=new Uint8Array(gaussBlur(g,w,h,bsig).map(v=>Math.max(0,Math.min(255,Math.round(v)))));
+      if($('use-tophat').checked)g=tophat(g,w,h,Math.floor(+$('tophat-size').value/2));
+      addStage('02 preprocessed',grayToID(g,w,h),w,h);setProgress(28);
+      const bm=$('bin-method').value,inv=$('bin-invert').checked;
+      let bin;
+      if(bm==='none'){bin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)bin[i]=g[i]>128?1:0;}
+      else if(bm==='otsu'){const t=otsu(g,w,h);bin=applyThresh(g,w,h,t,inv);addStage('03 binarized',binToID(bin,w,h),w,h,`otsu t=${t}`);}
+      else if(bm==='triangle'){const t=triangle(g,w,h);bin=applyThresh(g,w,h,t,inv);addStage('03 binarized',binToID(bin,w,h),w,h,`triangle t=${t}`);}
+      else if(bm==='manual'){bin=applyThresh(g,w,h,+$('thresh-val').value,inv);addStage('03 binarized',binToID(bin,w,h),w,h);}
+      else{const tm={'adapt-gauss':'gauss','adapt-mean':'mean','sauvola':'sauvola','niblack':'niblack','bradley':'bradley'};bin=adaptThresh(g,w,h,+$('block-size').value,+$('thresh-k').value,tm[bm]||'gauss',inv);addStage('03 binarized',binToID(bin,w,h),w,h,bm);}
+      setProgress(40);
+      const em=$('edge-method').value,et=+$('edge-thresh').value;
+      let edgeBin;
+      if(em==='none'){edgeBin=bin;}
+      else if(em==='canny'){const ce=cannyEdge(g,w,h,+$('canny-lo').value,+$('canny-hi').value);edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=ce[i]>0?1:0;}
+      else if(em==='sobel'){const s=gradMag(g,w,h,'sobel');edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=s[i]>et?1:0;}
+      else if(em==='scharr'){const s=gradMag(g,w,h,'scharr');edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=s[i]>et?1:0;}
+      else if(em==='prewitt'){const s=gradMag(g,w,h,'prewitt');edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=s[i]>et?1:0;}
+      else if(em==='roberts'){const s=roberts(g,w,h);edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=s[i]>et?1:0;}
+      else if(em==='laplacian'){const s=laplacian(g,w,h);edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=s[i]>et?1:0;}
+      else if(em==='log'){const s=logEdge(g,w,h,+$('log-sigma').value);edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=s[i]>et?1:0;}
+      else if(em==='dog'){const s=dogEdge(g,w,h,+$('dog-s1').value,+$('dog-s2').value);edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=s[i]>128?1:0;}
+      else if(em.startsWith('contour')){const ct=findContours(bin,w,h);edgeBin=new Uint8Array(w*h);for(let i=0;i<w*h;i++)edgeBin[i]=ct[i]>0?1:0;}
+      else edgeBin=bin;
+      if(em!=='none')addStage('04 edges',binToID(edgeBin,w,h),w,h,em);
+      setProgress(55);
+      let morph=new Uint8Array(edgeBin);
+      if($('use-close').checked){const cs=Math.floor(+$('close-size').value/2);morph=morphBin(morph,w,h,cs,'dilate');morph=morphBin(morph,w,h,cs,'erode');}
+      if($('use-dilate').checked)morph=morphBin(morph,w,h,Math.floor(+$('dilate-px').value/2),'dilate');
+      if($('use-erode').checked)morph=morphBin(morph,w,h,Math.floor(+$('erode-px').value/2),'erode');
+      if($('use-denoise').checked)morph=removeBlobs(morph,w,h,+$('min-blob').value);
+      addStage('05 morphology',binToID(morph,w,h),w,h);setProgress(68);
+      const sm=$('skel-method').value;
+      let skel=morph;
+      if(sm==='zhangsuen')skel=zhangSuen(morph,w,h,+$('skel-iters').value);
+      else if(sm==='guohall')skel=guoHall(morph,w,h,+$('skel-iters').value);
+      else if(sm==='morph')skel=morphThin(morph,w,h,+$('skel-iters').value);
+      else if(sm==='dist')skel=distMat(morph,w,h,+$('mat-thresh').value);
+      if($('skel-prune').checked&&sm!=='none')skel=pruneSkel(skel,w,h,+$('spur-len').value);
+      addStage('06 skeleton',binToID(skel,w,h),w,h,sm);
+      setProgress(85);
+      lastSkelBin=skel;lastW=w;lastH=h;
+      const fc=document.createElement('canvas');fc.width=w;fc.height=h;
+      const fctx=fc.getContext('2d');fctx.fillStyle='#fff';fctx.fillRect(0,0,w,h);
+      fctx.strokeStyle='#1a1a2e';fctx.lineWidth=1;fctx.lineCap='round';
+      for(let y=1;y<h-1;y++)for(let x=1;x<w-1;x++){if(!skel[y*w+x])continue;for(let d=0;d<4;d++){const nx=x+[1,0,1,-1][d],ny=y+[0,1,1,1][d];if(nx<w&&ny<h&&skel[ny*w+nx]){fctx.beginPath();fctx.moveTo(x+.5,y+.5);fctx.lineTo(nx+.5,ny+.5);fctx.stroke();}}}
+      const fw=document.createElement('div');fw.className='stage-block';fw.style.border='1px solid var(--accent)';
+      const fl=document.createElement('div');fl.className='stage-lbl';fl.innerHTML='07 final skeleton <span style="color:var(--accent)">→ ready for STEPS</span>';
+      fc.title='Click to expand';fc.style.cursor='pointer';
+      fc.addEventListener('click',()=>{fc.classList.toggle('expanded');fc.title=fc.classList.contains('expanded')?'Click to collapse':'Click to expand';});
+      const fwrap=document.createElement('div');fwrap.className='stage-canvas-wrap';fwrap.appendChild(fc);
+      fw.appendChild(fl);fw.appendChild(fwrap);$('stage-scroll').appendChild(fw);
+      const stageCount=document.querySelectorAll('.stage-block').length;
+      $('stages-count').textContent=`(${stageCount})`;
+      setProgress(100);setStatus(`Pipeline done — ${w}×${h}`);
+    }catch(e){setStatus('Error: '+e.message);console.error(e);}
+  },10);
+}
+
+// ═══════════════════════════════════════════
+//  KINEMATICS
+// ═══════════════════════════════════════════
+function getKin(){
+  const wh=+$('wheel-mm').value,ax=+$('axle-mm').value,ms=+$('microsteps').value;
+  const spm=(200*ms)/(Math.PI*wh);
+  const spd=(Math.PI*ax/360)*spm;
+  return{spm,spd,ax};
+}
+function poseUpdate(stL,stR,x,y,h,spm,ax){
+  const dl=stL/spm,dr=stR/spm,fwd=(dl+dr)/2;
+  const dh=(dr-dl)/ax*(180/Math.PI);
+  h=(h+dh)%360;
+  const hr=h*Math.PI/180;
+  x+=fwd*Math.sin(hr);y+=fwd*Math.cos(hr);
+  return{x,y,h};
+}
+function rotateSteps(deg,spd){const s=Math.round(Math.abs(deg)*spd);return deg>=0?{L:-s,R:+s}:{L:+s,R:-s};}
+function resample(pts,stepMm){
+  if(pts.length<2)return pts;
+  const out=[pts[0]];let[bx,by]=pts[0],carry=0;
+  for(let i=1;i<pts.length;i++){const[tx,ty]=pts[i];let seg=Math.hypot(tx-bx,ty-by);if(seg<1e-9)continue;let rem=seg+carry;while(rem>=stepMm){const t=(stepMm-carry)/seg;const nx=bx+t*(tx-bx),ny=by+t*(ty-by);out.push([+nx.toFixed(3),+ny.toFixed(3)]);[bx,by]=[nx,ny];seg=Math.hypot(tx-bx,ty-by);carry=0;rem=seg;}carry=rem;[bx,by]=[tx,ty];}
+  const last=out[out.length-1],end=pts[pts.length-1];if(Math.hypot(end[0]-last[0],end[1]-last[1])>0.3)out.push(end);
+  return out;
+}
+function strokeToMoves(pts,stepMm,isDraw,initH,kin){
+  if(pts.length<2)return[];
+  const rpts=resample(pts,stepMm);const moves=[];let curH=initH;
+  for(let i=1;i<rpts.length;i++){const dx=rpts[i][0]-rpts[i-1][0],dy=rpts[i][1]-rpts[i-1][1];const dist=Math.hypot(dx,dy);if(dist<0.05)continue;const bear=Math.atan2(dx,dy)*180/Math.PI;if(curH===null)curH=bear;const rot=((bear-curH+180)%360+360)%360-180;if(Math.abs(rot)>0.5){const r=rotateSteps(rot,kin.spd);if(r.L||r.R){moves.push({L:r.L,R:r.R,label:`R${rot>0?'+':''}${rot.toFixed(1)}`,draw:isDraw,pen:null});curH=bear;}}const steps=Math.round(dist*kin.spm);if(steps>0)moves.push({L:steps,R:steps,label:`${isDraw?'D':'T'}${dist.toFixed(1)}`,draw:isDraw,pen:null});}
+  return moves;
+}
+
+// ═══════════════════════════════════════════
+//  SKELETON → STROKES
+// ═══════════════════════════════════════════
+function skelToStrokes(skel,w,h,paperW,paperH,minStrokeMm,rdpEps,mirrorY){
+  const visited=new Uint8Array(w*h);
+  const scale=Math.min(paperW/w,paperH/h);
+  const offX=(paperW-w*scale)/2,offY=(paperH-h*scale)/2;
+  const toMm=(px,py)=>[+(px*scale+offX).toFixed(2),+((mirrorY?(h-py):py)*scale+offY).toFixed(2)];
+  function neighbors(idx){const x=idx%w,y=Math.floor(idx/w),nb=[];for(let ky=-1;ky<=1;ky++)for(let kx=-1;kx<=1;kx++){if(!ky&&!kx)continue;const nx=x+kx,ny=y+ky;if(nx>=0&&nx<w&&ny>=0&&ny<h&&skel[ny*w+nx])nb.push(ny*w+nx);}return nb;}
+  const strokes=[];
+  for(let idx=0;idx<w*h;idx++){
+    if(!skel[idx]||visited[idx])continue;
+    const stack=[[idx,[idx]]];
+    while(stack.length){const[cur,chain]=stack.pop();if(visited[cur])continue;visited[cur]=1;const unvNb=neighbors(cur).filter(n=>!visited[n]);if(unvNb.length===0||unvNb.length>1){if(chain.length>=2){const pts=chain.map(i=>[i%w,Math.floor(i/w)]);const mmPts=pts.map(([px,py])=>toMm(px,py));strokes.push(mmPts);}for(const n of unvNb)stack.push([n,[n]]);}else{chain.push(unvNb[0]);stack.push([unvNb[0],chain]);}}
+  }
+  function rdp(pts,eps){if(pts.length<=2)return pts;let maxD=0,maxI=0;const[ax,ay]=pts[0],[bx,by]=pts[pts.length-1];const len=Math.hypot(bx-ax,by-ay);for(let i=1;i<pts.length-1;i++){const[px,py]=pts[i];const d=len<1e-9?Math.hypot(px-ax,py-ay):Math.abs((by-ay)*px-(bx-ax)*py+bx*ay-by*ax)/len;if(d>maxD){maxD=d;maxI=i;}}if(maxD>eps){const l=rdp(pts.slice(0,maxI+1),eps),r=rdp(pts.slice(maxI),eps);return[...l.slice(0,-1),...r];}return[pts[0],pts[pts.length-1]];}
+  const minMm=minStrokeMm;
+  const simplified=strokes.map(s=>{const r=rdp(s,rdpEps);return r.length>=2?r:null;}).filter(s=>s&&Math.hypot(s[s.length-1][0]-s[0][0],s[s.length-1][1]-s[0][1])>=minMm||s&&s.length>=3);
+  if(!simplified.length)return[];
+  const ordered=[],remaining=[...simplified];let cur=[0,0];
+  while(remaining.length){let best=0,bd=Infinity,brev=false;for(let i=0;i<remaining.length;i++){const s=remaining[i];const df=Math.hypot(cur[0]-s[0][0],cur[1]-s[0][1]);const dr=Math.hypot(cur[0]-s[s.length-1][0],cur[1]-s[s.length-1][1]);const d=Math.min(df,dr);if(d<bd){bd=d;best=i;brev=dr<df;}}const s=remaining.splice(best,1)[0];ordered.push(brev?[...s].reverse():s);cur=ordered[ordered.length-1][ordered[ordered.length-1].length-1];}
+  return ordered;
+}
+
+// ═══════════════════════════════════════════
+//  PLAN MOVES
+// ═══════════════════════════════════════════
+function planMoves(strokes,stepMm,travelMm,parkMm,kin){
+  const allMoves=[];let cx=0,cy=-parkMm,ch=0,penDown=false;
+  function travelTo(tx,ty){const d=Math.hypot(tx-cx,ty-cy);if(d<0.5)return;const tmoves=strokeToMoves([[cx,cy],[tx,ty]],travelMm,false,ch,kin);let penChanged=false;for(const m of tmoves){const pc=(!penChanged&&penDown)?false:null;if(pc===false){penDown=false;penChanged=true;}allMoves.push({...m,pen:pc});const np=poseUpdate(m.L,m.R,cx,cy,ch,kin.spm,kin.ax);cx=np.x;cy=np.y;ch=np.h;}}
+  for(const stroke of strokes){if(stroke.length<2)continue;travelTo(stroke[0][0],stroke[0][1]);cx=stroke[0][0];cy=stroke[0][1];const dmoves=strokeToMoves(stroke,stepMm,true,ch,kin);for(let i=0;i<dmoves.length;i++){const m=dmoves[i];const pc=(i===0&&!penDown)?true:null;if(pc===true)penDown=true;allMoves.push({...m,pen:pc});const np=poseUpdate(m.L,m.R,cx,cy,ch,kin.spm,kin.ax);cx=np.x;cy=np.y;ch=np.h;}cy=stroke[stroke.length-1][1];cx=stroke[stroke.length-1][0];}
+  travelTo(0,-parkMm);return allMoves;
+}
+
+// ═══════════════════════════════════════════
+//  GENERATE STEPS
+// ═══════════════════════════════════════════
+function generateSteps(){
+  if(!lastSkelBin){setStatus('⚠ run pipeline first');return;}
+  setStatus('Generating STEPS…');setProgress(10);
+  setTimeout(()=>{
+    try{
+      const kin=getKin();
+      const strokes=skelToStrokes(lastSkelBin,lastW,lastH,+$('paper-w').value,+$('paper-h').value,+$('min-stroke').value,+$('rdp-eps').value,$('mirror-y').checked);
+      setProgress(50);
+      $('sb-strokes').textContent=strokes.length;
+      const moves=planMoves(strokes,+$('step-mm').value,+$('travel-mm').value,+$('park-mm').value,kin);
+      allMoves=moves;
+      $('sb-moves').textContent=moves.length;
+      setProgress(80);
+      const lines=[];
+      lines.push(`; DIFF PLOTTER v19 — ${new Date().toLocaleString()}`);
+      lines.push(`; Wheel=${$('wheel-mm').value}mm Axle=${$('axle-mm').value}mm µsteps=${$('microsteps').value}`);
+      lines.push(`; Paper=${$('paper-w').value}×${$('paper-h').value}mm  stepRes=${$('step-mm').value}mm`);
+      lines.push(`; steps/mm=${kin.spm.toFixed(3)}  steps/deg=${kin.spd.toFixed(3)}`);
+      lines.push(`; ${strokes.length} strokes → ${moves.length} moves`);
+      lines.push('');lines.push(`SPEED ${$('draw-us').value}`);lines.push(`TSPEED ${$('travel-us').value}`);
+      lines.push(`SERVO ${$('servo-pin').value} ${$('pen-down-ang').value} ${$('pen-up-ang').value}`);
+      lines.push('PEN UP');lines.push('');
+      for(const m of moves){if(m.pen===true)lines.push('PEN DOWN');else if(m.pen===false)lines.push('PEN UP');lines.push(`STEPS L:${m.L} R:${m.R}  ; ${m.label}`);}
+      lines.push('');lines.push('PEN UP');lines.push('; END');
+      window._stepsText=lines.join('\n');
+      setProgress(100);setStatus(`${strokes.length} strokes / ${moves.length} moves`);
+      drawPreview(moves,kin);
+    }catch(e){setStatus('Error: '+e.message);console.error(e);}
+  },10);
+}
+
+// ═══════════════════════════════════════════
+//  PREVIEW CANVAS
+// ═══════════════════════════════════════════
+function drawPreview(moves,kin){
+  window._lastMoves=moves;window._lastKin=kin;
+  const c=$('preview-canvas');
+  const cw=c.clientWidth||600,ch=c.clientHeight||400;
+  c.width=cw;c.height=ch;
+  const ctx=c.getContext('2d');
+  const pw=+$('paper-w').value,ph=+$('paper-h').value,pkMm=+$('park-mm').value;
+  const margin=20;
+  const scale=Math.min((cw-margin*2)/(pw+10),(ch-margin*2)/(ph+pkMm+10));
+  const ox=cw/2-(pw*scale)/2,oy=margin+pkMm*scale;
+  ctx.fillStyle='#dde8dc';ctx.fillRect(0,0,cw,ch);
+  ctx.fillStyle='#f0eeea';ctx.fillRect(ox,oy,pw*scale,ph*scale);
+  ctx.strokeStyle='#9aaa90';ctx.lineWidth=1;ctx.strokeRect(ox,oy,pw*scale,ph*scale);
+  ctx.strokeStyle='#aaccaa';ctx.lineWidth=1;ctx.setLineDash([4,4]);
+  ctx.beginPath();ctx.moveTo(ox,oy);ctx.lineTo(ox+pw*scale,oy);ctx.stroke();ctx.setLineDash([]);
+  ctx.strokeStyle='rgba(100,130,100,0.2)';ctx.lineWidth=0.5;
+  const grid=25;
+  for(let xm=0;xm<=pw;xm+=grid){ctx.beginPath();ctx.moveTo(ox+xm*scale,oy);ctx.lineTo(ox+xm*scale,oy+ph*scale);ctx.stroke();}
+  for(let ym=0;ym<=ph;ym+=grid){ctx.beginPath();ctx.moveTo(ox,oy+(ph-ym)*scale);ctx.lineTo(ox+pw*scale,oy+(ph-ym)*scale);ctx.stroke();}
+  let x=0,y=-pkMm,h=0;
+  let prevX=ox+x*scale,prevY=oy+(ph-y)*scale;
+  for(const m of moves){
+    const isDraw=m.draw;
+    const np=poseUpdate(m.L,m.R,x,y,h,kin.spm,kin.ax);
+    x=np.x;y=np.y;h=np.h;
+    const nx=ox+x*scale,ny=oy+(ph-y)*scale;
+    ctx.beginPath();ctx.moveTo(prevX,prevY);ctx.lineTo(nx,ny);
+    ctx.strokeStyle=isDraw?'rgba(176,90,0,0.8)':'rgba(100,60,220,0.18)';
+    ctx.lineWidth=isDraw?1.4:0.6;ctx.stroke();
+    prevX=nx;prevY=ny;
+  }
+  ctx.fillStyle='#0369a1';ctx.beginPath();ctx.arc(prevX,prevY,4,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle='#6b7280';ctx.font='9px Courier New';ctx.textAlign='center';
+  ctx.fillText(`X:${x.toFixed(1)}  Y:${y.toFixed(1)}  H:${h.toFixed(1)}°`,cw/2,ch-6);
+}
+
+// ═══════════════════════════════════════════
+//  DEMO
+// ═══════════════════════════════════════════
+let demoInterval=null;
+function demoRun(){
+  if(!allMoves.length){setStatus('⚠ generate steps first');return;}
+  if(demoInterval)clearInterval(demoInterval);
+  const c=$('preview-canvas');
+  const cw=c.clientWidth||600,ch=c.clientHeight||400,ctx=c.getContext('2d');
+  const kin=getKin(),pw=+$('paper-w').value,ph=+$('paper-h').value,pkMm=+$('park-mm').value;
+  const margin=20,scale=Math.min((cw-margin*2)/(pw+10),(ch-margin*2)/(ph+pkMm+10));
+  const ox=cw/2-(pw*scale)/2,oy=margin+pkMm*scale;
+  let i=0,x=0,y=-pkMm,h_=0;
+  const trailCanvas=document.createElement('canvas');trailCanvas.width=cw;trailCanvas.height=ch;
+  const tctx=trailCanvas.getContext('2d');
+  tctx.fillStyle='#dde8dc';tctx.fillRect(0,0,cw,ch);
+  tctx.fillStyle='#f0eeea';tctx.fillRect(ox,oy,pw*scale,ph*scale);
+  tctx.strokeStyle='#9aaa90';tctx.lineWidth=1;tctx.strokeRect(ox,oy,pw*scale,ph*scale);
+  tctx.strokeStyle='rgba(100,130,100,0.2)';tctx.lineWidth=0.5;
+  const grid=25;
+  for(let xm=0;xm<=pw;xm+=grid){tctx.beginPath();tctx.moveTo(ox+xm*scale,oy);tctx.lineTo(ox+xm*scale,oy+ph*scale);tctx.stroke();}
+  for(let ym=0;ym<=ph;ym+=grid){tctx.beginPath();tctx.moveTo(ox,oy+(ph-ym)*scale);tctx.lineTo(ox+pw*scale,oy+(ph-ym)*scale);tctx.stroke();}
+  let prevX=ox,prevY=oy+(ph+pkMm)*scale;
+  $('plot-prog').style.width='0%';
+  demoInterval=setInterval(()=>{
+    if(i>=allMoves.length){clearInterval(demoInterval);$('plot-status').textContent='Demo done ✓';return;}
+    const batch=Math.min(20,allMoves.length-i);
+    for(let b=0;b<batch;b++,i++){
+      const m=allMoves[i];
+      const np=poseUpdate(m.L,m.R,x,y,h_,kin.spm,kin.ax);x=np.x;y=np.y;h_=np.h;
+      const nx=ox+x*scale,ny=oy+(ph-y)*scale;
+      tctx.beginPath();tctx.moveTo(prevX,prevY);tctx.lineTo(nx,ny);
+      tctx.strokeStyle=m.draw?'rgba(176,90,0,0.8)':'rgba(100,60,220,0.18)';
+      tctx.lineWidth=m.draw?1.4:0.6;tctx.stroke();
+      prevX=nx;prevY=ny;
+    }
+    ctx.drawImage(trailCanvas,0,0);
+    ctx.fillStyle='#0369a1';ctx.beginPath();ctx.arc(prevX,prevY,4,0,Math.PI*2);ctx.fill();
+    const pct=Math.round(i/allMoves.length*100);
+    $('plot-prog').style.width=pct+'%';
+    $('plot-status').textContent=`Demo ${i}/${allMoves.length}  X:${x.toFixed(1)} Y:${y.toFixed(1)}`;
+  },30);
+}
+
+// ═══════════════════════════════════════════
+//  STEPS DOWNLOAD
+// ═══════════════════════════════════════════
+function downloadSteps(){
+  if(!window._stepsText){setStatus('⚠ generate steps first');return;}
+  const a=document.createElement('a');
+  a.download='plotter_v19_steps.txt';
+  a.href=URL.createObjectURL(new Blob([window._stepsText],{type:'text/plain'}));
+  a.click();
+}
+
+// ═══════════════════════════════════════════
+//  WEB SERIAL
+// ═══════════════════════════════════════════
+let serialPort=null,serialWriter=null,serialReader=null;
+let _serialBuf='';
+let _okListeners=[];
+
+async function toggleConnect(){
+  if(serialPort){await disconnectSerial();return;}
+  if(!navigator.serial){slog('Web Serial API not supported — use Chrome/Edge','err');return;}
+  try{
+    serialPort=await navigator.serial.requestPort();
+    await serialPort.open({baudRate:115200});
+    serialWriter=serialPort.writable.getWriter();
+    slog('Connected','ok');
+    $('conn-dot').className='conn-dot on';
+    $('conn-status').textContent='ONLINE';
+    $('conn-btn').textContent='DISCONNECT';
+    _serialBuf='';
+    _okListeners=[];
+    readSerial();
+    startKeepalive();
+  }catch(e){slog('Connect failed: '+e.message,'err');serialPort=null;}
+}
+
+async function disconnectSerial(){
+  stopFlag=true;isPlotting=false;
+  stopKeepalive();
+  for(const l of _okListeners)l.reject(new Error('Disconnected'));
+  _okListeners=[];
+  try{if(serialWriter){await serialWriter.releaseLock();serialWriter=null;}
+  if(serialReader){await serialReader.cancel();serialReader=null;}
+  if(serialPort){await serialPort.close();serialPort=null;}}catch(e){}
+  $('conn-dot').className='conn-dot';$('conn-status').textContent='OFFLINE';$('conn-btn').textContent='CONNECT';
+  slog('Disconnected','info');
+}
+
+async function readSerial(){
+  if(!serialPort)return;
+  const dec=new TextDecoder();
+  try{
+    serialReader=serialPort.readable.getReader();
+    while(true){
+      const{value,done}=await serialReader.read();
+      if(done)break;
+      _serialBuf+=dec.decode(value);
+      const lines=_serialBuf.split('\n');
+      _serialBuf=lines.pop();
+      for(const line of lines){
+        const t=line.trim();if(!t)continue;
+        const isOk=t.startsWith('OK');
+        const isErr=t.startsWith('ERR');
+        const cls=isOk?'ok':isErr?'err':'info';
+        slog(t,cls);
+        if(isOk||isErr){
+          if(_okListeners.length>0){
+            const listener=_okListeners.shift();
+            if(isErr)listener.reject(new Error(t));
+            else listener.resolve(t);
+          }
+        }
+      }
+    }
+  }catch(e){
+    if(serialPort)slog('Read error: '+e.message,'err');
+    for(const l of _okListeners)l.reject(new Error('Serial read error'));
+    _okListeners=[];
+  }
+}
+
+function waitOk(timeoutMs=15000){
+  return new Promise((resolve,reject)=>{
+    const deadline=Date.now()+timeoutMs;
+    const stopCheck=setInterval(()=>{
+      if(stopFlag){clearInterval(stopCheck);reject(new Error('Stopped'));}
+      if(Date.now()>deadline){clearInterval(stopCheck);reject(new Error('Timeout — Arduino not responding'));}
+    },50);
+    const entry={resolve:(v)=>{clearInterval(stopCheck);resolve(v);},reject:(e)=>{clearInterval(stopCheck);reject(e);}};
+    _okListeners.push(entry);
+  });
+}
+
+async function writeLine(cmd){
+  if(!serialWriter){slog('Not connected','err');return false;}
+  try{
+    slog(cmd,'tx');
+    await serialWriter.write(new TextEncoder().encode(cmd.trim()+'\n'));
+    return true;
+  }catch(e){slog('Write error: '+e.message,'err');return false;}
+}
+
+function sendManual(){const v=$('serial-in').value.trim();if(!v)return;writeLine(v);$('serial-in').value='';}
+function sendCmd(cmd){writeLine(cmd);}
+function sendPenUp(){writeLine('PEN UP');}
+function sendPenDown(){writeLine('PEN DOWN');}
+function configServo(){writeLine(`SERVO ${$('servo-pin').value} ${$('pen-down-ang').value} ${$('pen-up-ang').value}`);}
+
+let _keepaliveTimer=null;
+function startKeepalive(){
+  stopKeepalive();
+  _keepaliveTimer=setInterval(()=>{
+    if(serialPort&&!isPlotting){
+      $('ping-status')&&($('ping-status').textContent='♥ '+new Date().toTimeString().slice(0,8));
+      writeLine('PING');
+      waitOk(3000).catch(()=>{});
+    }
+  },4000);
+}
+function stopKeepalive(){if(_keepaliveTimer){clearInterval(_keepaliveTimer);_keepaliveTimer=null;}}
+
+// ═══════════════════════════════════════════
+//  PLOT
+// ═══════════════════════════════════════════
+async function startPlot(){
+  if(!allMoves.length){setStatus('⚠ generate steps first');return;}
+  if(!serialPort){slog('Not connected','err');return;}
+  if(isPlotting)return;
+  isPlotting=true;stopFlag=false;
+  stopKeepalive();
+  const kin=getKin();
+  const drawUs=+$('draw-us').value,travelUs=+$('travel-us').value;
+  _okListeners=[];
+  await writeLine(`SPEED ${drawUs}`);await sleep(60);
+  await writeLine(`TSPEED ${travelUs}`);await sleep(60);
+  const servoOn=$('servo-enable').checked;
+  await writeLine(servoOn?'SERVO_ENABLE':'SERVO_DISABLE');await sleep(60);
+  try{await waitOk(2000);}catch(e){}
+  await writeLine(`SERVO ${$('servo-pin').value} ${$('pen-down-ang').value} ${$('pen-up-ang').value}`);await sleep(80);
+  try{await waitOk(2000);}catch(e){}
+  slog(`▶ Plotting ${allMoves.length} moves… draw=${drawUs}µs travel=${travelUs}µs`,'info');
+  let x=0,y=-+$('park-mm').value,h=0;
+  let lastSpd=-1,errs=0;
+  for(let i=0;i<allMoves.length;i++){
+    if(stopFlag){await writeLine('STOP');slog('■ STOPPED','err');break;}
+    const m=allMoves[i];
+    if(m.pen===true){await writeLine('PEN DOWN');await sleep(120);try{await waitOk(2000);}catch(e){}}
+    else if(m.pen===false){await writeLine('PEN UP');await sleep(120);try{await waitOk(2000);}catch(e){}}
+    const curSpd=m.draw?drawUs:travelUs;
+    if(curSpd!==lastSpd){
+      await writeLine(`SPEED ${curSpd}`);await sleep(60);
+      try{await waitOk(2000);}catch(e){}
+      lastSpd=curSpd;
+    }
+    const steps=Math.max(Math.abs(m.L),Math.abs(m.R));
+    const tmo=Math.max(3000,steps*curSpd/1e6*1000*4+500);
+    await writeLine(`STEPS L:${m.L} R:${m.R}`);
+    try{
+      await waitOk(tmo);
+      errs=0;
+      const np=poseUpdate(m.L,m.R,x,y,h,kin.spm,kin.ax);x=np.x;y=np.y;h=np.h;
+      if(i%10===0||i===allMoves.length-1){
+        const pct=Math.round((i+1)/allMoves.length*100);
+        $('plot-prog').style.width=pct+'%';
+        $('plot-status').textContent=`${i+1}/${allMoves.length} ${m.label}  X:${x.toFixed(1)} Y:${y.toFixed(1)}`;
+      }
+      await sleep(2);
+    }catch(e){
+      slog('⚠ '+e.message,'err');
+      errs++;
+      if(e.message==='Stopped')break;
+      if(errs>=3){slog('✖ 3 timeouts — aborting. Check 12V + Vref.','err');break;}
+    }
+  }
+  await writeLine('PEN UP');
+  isPlotting=false;
+  $('plot-status').textContent=stopFlag?'Stopped':'Done ✓';
+  slog(stopFlag?'■ Plot stopped':'✓ Plot complete','ok');
+  startKeepalive();
+}
+
+function stopPlot(){
+  stopFlag=true;isPlotting=false;
+  writeLine('STOP');
+  slog('■ STOP sent','err');
+  $('plot-status').textContent='Stopped';
+  startKeepalive();
+}
+
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+
+// ═══════════════════════════════════════════
+//  SERIAL LOG
+// ═══════════════════════════════════════════
+function slog(msg,cls=''){
+  const log=$('serial-log');
+  const d=document.createElement('div');d.className='log-line '+(cls||'');
+  const ts=new Date().toTimeString().slice(0,8);
+  d.textContent=`[${ts}] ${msg}`;
+  log.appendChild(d);log.scrollTop=log.scrollHeight;
+  if(log.children.length>100)log.removeChild(log.children[0]);
+}
+
+// ═══════════════════════════════════════════
+//  PORT SCAN
+// ═══════════════════════════════════════════
+async function refreshPorts(){
+  if(!navigator.serial){$('port-sel').innerHTML='<option>Web Serial only</option>';return;}
+  const ports=await navigator.serial.getPorts();
+  const sel=$('port-sel');sel.innerHTML='';
+  if(!ports.length){const o=document.createElement('option');o.textContent='-- click CONNECT --';sel.appendChild(o);}
+  else ports.forEach((p,i)=>{const o=document.createElement('option');o.textContent=`Port ${i+1}`;sel.appendChild(o);});
+}
+refreshPorts();
+
+// ResizeObserver to redraw preview canvas when container resizes
+const previewCanvas = $('preview-canvas');
+if(previewCanvas){
+  new ResizeObserver(()=>{
+    if(window._lastMoves&&window._lastKin){
+      drawPreview(window._lastMoves, window._lastKin);
+    }
+  }).observe(previewCanvas.parentElement);
+}
+
+// ═══════════════════════════════════════════
+//  PRESETS
+// ═══════════════════════════════════════════
+const presets={
+  sketch:{binMethod:'sauvola',blurPx:1,edgeMethod:'none',skelMethod:'zhangsuen',skelIters:30,useClose:false,useClahe:false,cannLo:50,cannHi:150},
+  plotter:{binMethod:'sauvola',blurPx:1,edgeMethod:'canny',skelMethod:'zhangsuen',skelIters:20,useClose:true,useClahe:true,cannLo:30,cannHi:100},
+  clean:{binMethod:'otsu',blurPx:1,edgeMethod:'contour-ext',skelMethod:'zhangsuen',skelIters:15,useClose:false,useClahe:false,cannLo:50,cannHi:150},
+  scan:{binMethod:'adapt-gauss',blurPx:0,edgeMethod:'none',skelMethod:'morph',skelIters:10,useClose:true,useClahe:true,cannLo:50,cannHi:150},
+  photo:{binMethod:'manual',blurPx:2,edgeMethod:'canny',skelMethod:'zhangsuen',skelIters:10,useClose:false,useClahe:true,cannLo:50,cannHi:150},
+  anime:{binMethod:'otsu',blurPx:0,edgeMethod:'sobel',skelMethod:'zhangsuen',skelIters:20,useClose:false,useClahe:false,cannLo:50,cannHi:150},
+};
+function applyPreset(name,btn){
+  document.querySelectorAll('.pbtn').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const p=presets[name];
+  $('bin-method').value=p.binMethod;
+  $('blur-px').value=p.blurPx;$('v-blur-px').textContent=p.blurPx;
+  $('edge-method').value=p.edgeMethod;
+  $('skel-method').value=p.skelMethod;
+  $('skel-iters').value=p.skelIters;$('v-skel-iters').textContent=p.skelIters;
+  $('use-clahe').checked=p.useClahe;$('use-close').checked=p.useClose;
+  $('canny-lo').value=p.cannLo;$('v-canny-lo').textContent=p.cannLo;
+  $('canny-hi').value=p.cannHi;$('v-canny-hi').textContent=p.cannHi;
+}
+</script>
+</body>
+</html>

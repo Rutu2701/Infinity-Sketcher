@@ -5,44 +5,65 @@ This document contains build/test commands and code style guidelines for the Dif
 ## Project Overview
 
 Diff Drive Plotter is a differential drive robot plotter system with:
-- Python GUI application for image processing and path planning (`v18_arc_aware.py`)
-- Arduino firmware for motor control and servo handling (`v6_arc_aware.ino`)
-- Multi-algorithm midline detection with arc-aware speed modulation
+- Python GUI application (`v17.py`)
+- **Web GUI** (`plotter_lab_v19.html`) - browser-based alternative with full image processing pipeline
+- Arduino firmware (`firmware.ino`) for motor control and servo handling
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `v17.py` | Python Tkinter GUI (legacy) |
+| `plotter_lab_v19.html` | Web-based GUI with image processing (primary) |
+| `firmware.ino` | Arduino motor/servo control |
+
+## Running the Web GUI
+
+```bash
+# Just open the HTML file in Chrome/Edge
+open plotter_lab_v19.html
+# or serve it:
+python -m http.server 8000
+```
+
+## Servo Enable/Disable
+
+Both web and Python GUIs support disabling the servo to skip pen changes:
+
+```cpp
+// Arduino firmware commands:
+SERVO_ENABLE   // Enable servo (default on boot)
+SERVO_DISABLE // Disable servo (skips pen up/down)
+```
+
+## Web GUI Layout (v19)
+
+3-column layout with resizable splitters:
+1. **Settings Panel** (280px) - scrollable controls
+2. **Pipeline Stages** (middle) - scrollable image processing stages  
+3. **Live Preview** (right) - auto-resizing canvas with ResizeObserver
 
 ## Build & Test Commands
 
 ### Python Environment Setup
 ```bash
-# Install Python dependencies
 pip install opencv-python Pillow pyserial numpy
-
-# Optional: scikit-image for additional algorithms
-pip install scikit-image
 ```
 
-### Running the Application
+### Arduino
 ```bash
-# Run the Python plotter GUI
-python v18_arc_aware.py
+# Compile with Arduino CLI
+arduino-cli compile --fqbn arduino:avr:uno firmware.ino
 ```
 
-### Testing Arduino Code
-```bash
-# Compile and upload using Arduino IDE or PlatformIO
-# No automated tests - manual verification via serial commands
-```
+## Code Style
 
-### Development Commands
-```bash
-# Run with python debug output
-python -m pdb v18_arc_aware.py
+- Python: 2-space indentation, snake_case
+- Arduino: 2-space indentation, camelCase
+- HTML/CSS: 2-space, CSS variables for theming
 
-# Check Python syntax
-python -m py_compile v18_arc_aware.py
-
-# Check Arduino syntax (requires Arduino CLI)
-arduino-cli compile --fqbn arduino:avr:uno v6_arc_aware.ino
-```
+---
+*Updated: April 2026*
 
 ## Code Style Guidelines
 

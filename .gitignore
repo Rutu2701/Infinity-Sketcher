@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Cache/temp
+.ruff_cache/
+.aider.*
+.qwen*
+
+# Node
+node_modules/
+.opencode/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Personal/dev
+CHECKPOINT.md
+DEVELOPMENT_LOG.md
+Copy of v15.ino
+*.bak
+*~
+
+# Old versions (keep main versions only)
+plotter_lab_v18.html

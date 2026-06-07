@@ -19,6 +19,8 @@
  * - SPEED <us>          Set draw speed (microseconds per step)
  * - TSPEED <us>         Set travel speed (microseconds per step)
  * - SERVO <pin> <down> <up>  Configure servo
+ * - SERVO_ENABLE        Enable servo movement
+ * - SERVO_DISABLE       Disable servo movement (skip pen changes)
  * - PING                Check connection (responds OK)
  * - STOP                Emergency stop
  */
@@ -59,6 +61,7 @@ bool penConfigured = false;
 volatile long drawStepDelay  = DEFAULT_DRAW_US;
 volatile long travelStepDelay = DEFAULT_TRAVEL_US;
 volatile bool stopRequested  = false;
+bool servoEnabled = true;
 
 // ═══════════════════════════════════════════════════════════════
 //  SETUP
@@ -178,9 +181,11 @@ void setPen(bool down) {
     penServo.attach(servoPin);
     penConfigured = true;
   }
-  penServo.write(down ? penDownAngle : penUpAngle);
+  if (servoEnabled) {
+    penServo.write(down ? penDownAngle : penUpAngle);
+    delay(150);
+  }
   penIsDown = down;
-  delay(150);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -261,6 +266,14 @@ void processCommand(String cmd) {
         Serial.println(F("ERR Bad SERVO format"));
       }
     }
+    
+  } else if (cmd == "SERVO_ENABLE") {
+    servoEnabled = true;
+    Serial.println(F("OK"));
+    
+  } else if (cmd == "SERVO_DISABLE") {
+    servoEnabled = false;
+    Serial.println(F("OK"));
     
   } else if (cmd == "PING") {
     Serial.println(F("OK"));
