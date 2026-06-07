@@ -4,7 +4,8 @@
 
 Here's a quick look at the Diff Drive Plotter in action:
 
-![Plotter Demo Image](image of vehicle)
+![Diff Drive Plotter Robot](image of vehicle)
+
 <!--
 You can replace the above with a GIF or a link to a video demonstrating the plotter.
 Example:
