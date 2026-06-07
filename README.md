@@ -1,5 +1,16 @@
 # Diff Drive Plotter
 
+## Visual Demo
+
+Here's a quick look at the Diff Drive Plotter in action:
+
+![Plotter Demo Image](image of vehicle)
+<!--
+You can replace the above with a GIF or a link to a video demonstrating the plotter.
+Example:
+[![Plotter Demo Video](https://img.youtube.com/vi/YOUR_VIDEO_ID/0.jpg)](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
+-->
+
 ## Project Overview
 
 Diff Drive Plotter is a differential drive robot plotter system that converts images into vector paths for plotting. It features advanced image processing capabilities and offers both a Python GUI and a Web GUI for control and visualization.
