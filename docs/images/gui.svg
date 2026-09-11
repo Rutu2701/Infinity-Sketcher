@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 700">
+<rect width="1200" height="700" fill="#0b0b0b"/>
+<rect x="24" y="24" width="1152" height="652" rx="10" fill="#171717" stroke="#3a3a3a"/>
+<rect x="24" y="24" width="1152" height="54" rx="10" fill="#222"/>
+<circle cx="54" cy="51" r="8" fill="#777"/><circle cx="80" cy="51" r="8" fill="#777"/><circle cx="106" cy="51" r="8" fill="#777"/>
+<text x="145" y="57" fill="#eee" font-family="monospace" font-size="19">Infinity Sketcher — Diff Drive Plotter</text>
+<rect x="48" y="102" width="280" height="544" rx="6" fill="#f5f0eb"/>
+<text x="72" y="136" fill="#111" font-family="monospace" font-size="16">ROBOT / CONNECTION</text>
+<rect x="72" y="153" width="232" height="38" fill="#fff" stroke="#bbb"/><text x="86" y="178" fill="#333" font-family="sans-serif" font-size="14">Serial Port</text>
+<rect x="72" y="207" width="108" height="38" fill="#111"/><text x="94" y="232" fill="#fff" font-family="sans-serif" font-size="14">CONNECT</text>
+<rect x="196" y="207" width="108" height="38" fill="#ddd"/><text x="219" y="232" fill="#222" font-family="sans-serif" font-size="14">STOP</text>
+<text x="72" y="286" fill="#111" font-family="monospace" font-size="15">MOTION PARAMETERS</text>
+<g fill="#444" font-family="sans-serif" font-size="13"><text x="72" y="316">Wheel diameter</text><text x="72" y="352">Axle width</text><text x="72" y="388">Draw speed</text><text x="72" y="424">Travel speed</text><text x="72" y="460">PID correction</text></g>
+<g fill="#fff" stroke="#bbb"><rect x="190" y="300" width="114" height="27"/><rect x="190" y="336" width="114" height="27"/><rect x="190" y="372" width="114" height="27"/><rect x="190" y="408" width="114" height="27"/><rect x="190" y="444" width="114" height="27"/></g>
+<text x="72" y="512" fill="#111" font-family="monospace" font-size="15">PIPELINE</text>
+<text x="72" y="540" fill="#555" font-family="sans-serif" font-size="13">Image → Process → Paths → Moves</text>
+<rect x="72" y="570" width="232" height="45" fill="#e8ff4f"/><text x="126" y="598" fill="#111" font-family="sans-serif" font-size="15" font-weight="bold">PROCESS IMAGE</text>
+<rect x="352" y="102" width="800" height="544" rx="6" fill="#101010" stroke="#333"/>
+<text x="378" y="136" fill="#aaa" font-family="monospace" font-size="15">LIVE ROBOT VIEW / PATH PREVIEW</text>
+<rect x="378" y="158" width="748" height="390" fill="#f5f0eb"/>
+<g fill="none" stroke="#111" stroke-width="3"><path d="M430 460 C500 230 600 240 660 370 S810 510 880 300 S1030 250 1080 440"/><path d="M470 500 C570 410 610 420 690 470 S850 520 1010 410"/></g>
+<circle cx="742" cy="392" r="14" fill="#e8ff4f" stroke="#111" stroke-width="4"/>
+<path d="M742 392 l0 -34" stroke="#111" stroke-width="4"/><path d="M742 358 l-7 12 h14z" fill="#111"/>
+<text x="378" y="580" fill="#999" font-family="monospace" font-size="13">X: 84.2 mm   Y: 61.7 mm   θ: 37.4°   |   READY</text>
+<rect x="378" y="604" width="748" height="28" fill="#222"/><rect x="378" y="604" width="510" height="28" fill="#e8ff4f"/><text x="900" y="624" fill="#eee" font-family="monospace" font-size="12">SIMULATED MOVE 68%</text>
+</svg>
