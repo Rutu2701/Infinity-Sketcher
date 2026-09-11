@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🖊️ Infinity-Sketcher
+# Infinity-Sketcher
 
 **A differential-drive robot that draws images on an unbounded canvas.**
 
@@ -8,13 +8,12 @@
 
 [![Python](https://img.shields.io/badge/Python-3.7%2B-blue?logo=python)](https://www.python.org/)
 [![Arduino](https://img.shields.io/badge/Arduino-Uno%2FNano-00979D?logo=arduino)](https://www.arduino.cc/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
 ---
 
-## 📋 Table of Contents
+## Table of Contents
 
 - [Problem Statement](#-problem-statement)
 - [How It Works](#-how-it-works)
@@ -30,7 +29,7 @@
 
 ---
 
-## 🎯 Problem Statement
+## Problem Statement
 
 Most consumer plotters and drawing robots are constrained to a fixed paper size. Infinity-Sketcher removes that constraint by mounting the drawing mechanism on a differential-drive robot that can move across a large flat surface while tracing an image.
 
@@ -45,7 +44,7 @@ Most consumer plotters and drawing robots are constrained to a fixed paper size.
 
 ---
 
-## ⚙️ How It Works
+## How It Works
 
 Infinity-Sketcher combines a **Python GUI** running on a computer with **Arduino firmware** running on the robot.
 
@@ -73,7 +72,7 @@ The project also contains the skeleton-path-tracing work used for extracting dra
 
 ---
 
-## 🏗️ System Architecture
+## System Architecture
 
 ```text
 ┌───────────────────────────────────────────────────────┐
@@ -93,7 +92,7 @@ The project also contains the skeleton-path-tracing work used for extracting dra
 
 ---
 
-## 🔧 Hardware
+## Hardware
 
 Typical hardware for the robot:
 
@@ -122,7 +121,7 @@ Typical hardware for the robot:
 
 ---
 
-## 🖥️ Software Pipeline
+## Software Pipeline
 
 ```text
 Raw Image
@@ -151,7 +150,7 @@ The Python application uses OpenCV, NumPy, Pillow and serial communication. Potr
 
 ---
 
-## 🧪 HTML Plotter Lab
+## HTML Plotter Lab
 
 `plotter_lab_v19.html` is a standalone browser-based laboratory for experimenting with the plotter pipeline and visualising processing/path-planning behaviour without changing the main Python application.
 
@@ -163,7 +162,7 @@ plotter_lab_v19.html
 
 ---
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Clone the repository
 
@@ -199,7 +198,7 @@ python v17.py
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Important parameters include wheel diameter, axle length, drawing/travel speed, curvature or path-processing thresholds, and pen-up/pen-down positions. Calibrate these values for the actual robot before relying on absolute dimensions.
 
@@ -213,7 +212,7 @@ For differential-drive rotation, wheel travel depends on the axle length and com
 
 ---
 
-## 📁 File Structure
+## File Structure
 
 ```text
 Infinity-Sketcher/
@@ -231,7 +230,7 @@ Only the files required for the main application, firmware, dependency installat
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
@@ -244,7 +243,7 @@ Only the files required for the main application, firmware, dependency installat
 
 ---
 
-## 🔭 Future Work
+## Future Work
 
 - [ ] Encoder feedback and closed-loop motion
 - [ ] Improved curvature-aware speed control
@@ -255,13 +254,13 @@ Only the files required for the main application, firmware, dependency installat
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Pull requests are welcome. Open an issue first for substantial changes so the implementation can be discussed before integration.
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the MIT License.
 
